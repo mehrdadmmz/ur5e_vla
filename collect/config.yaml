@@ -1,0 +1,21 @@
+data:
+  name: HWM_geomsort
+  output_dir: ../data/
+  log: log.json
+
+recording:
+  hz: 20
+  camera_serials:
+    - "337322072205"  # base camera
+    - "243322072780"  # wrist camera
+  camera_resolution: [640, 480]
+
+robot:
+  ip: "192.168.56.101"
+  speed: 0.4           # rad/s for joint moves
+  acceleration: 0.4    # rad/s^2
+
+gripper:
+  port: 63352
+  speed: 100           # 0-255
+  force: 100           # 0-255

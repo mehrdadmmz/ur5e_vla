@@ -1,0 +1,26 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Data files (large)
+data/*/
+*.hdf5
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+log.json
+
+# OS
+.DS_Store
+Thumbs.db

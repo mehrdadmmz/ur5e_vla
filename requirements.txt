@@ -1,0 +1,19 @@
+# Core dependencies
+numpy
+opencv-python
+pyyaml
+pyrealsense2
+h5py
+
+# UR5e robot control
+ur-rtde
+
+# CLI tools
+tyro
+
+# Policy rollout (optional - for inference)
+# openpi_client  # Install separately if needed
+
+# Data processing (optional - for ROS bag processing)
+# rosbag2_py
+# open3d

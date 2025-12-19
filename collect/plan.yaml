@@ -1,0 +1,89 @@
+task:
+  name: "HWM2_4object_sort"
+  num_rounds: 3
+  record: true
+
+# Named poses [x, y, z, qx, qy, qz, qw]
+poses:
+  home:          [0.00, 0.45, 0.50, 1, 0, 0, 0]
+
+  chip_start:    [0.077, 0.721, 0.269, 1, 0, 0, 0]
+  chip_target:   [-0.120, 0.800, 0.269, 1, 0, 0, 0]
+
+  coke_start:    [-0.193, 0.542, 0.198, 1, 0, 0, 0]
+  coke_target:   [-0.123, 0.700, 0.193, 1, 0, 0, 0]
+
+  bowl_start:    [-0.193, 0.542, 0.170, 1, 0, 0, 0]
+  bowl_target:   [0.046, 0.540, 0.124, 1, 0, 0, 0]
+
+  redbox_start:  [0.046, 0.540, 0.124, 1, 0, 0, 0]
+  redbox_target: [0.136, 0.780, 0.124, 1, 0, 0, 0]
+
+# Heights for different objects
+heights:
+  chip: 0.200
+  coke: 0.220
+  bowl: 0.170
+  redbox: 0.200
+
+# User-defined compound actions (macros)
+# Primitives:
+#   - move_to: {pose: name_or_list, height: optional, jitter: optional, random_offset: optional}
+#   - move_delta: [dx, dy, dz, dqx, dqy, dqz, dqw]  # position + quaternion delta
+#   - gripper: open | close | <0-255>
+#   - wait: <seconds>
+#
+# Quaternion format: [qx, qy, qz, qw]
+#   - Identity (no rotation): [0, 0, 0, 1]
+#   - 90° around Z-axis:       [0, 0, 0.707, 0.707]
+#   - 180° around Z-axis:      [0, 0, 1, 0]
+#
+# Variables: $name - substituted when action is called
+
+actions:
+  pick:
+    - move_to: {pose: $pose, height: $height}
+    - move_delta: [0, 0, -0.05, 0, 0, 0, 1]
+    - gripper: close
+    - move_delta: [0, 0, 0.20, 0, 0, 0, 1]
+
+  place:
+    - move_to: {pose: $pose, height: $height}
+    - move_delta: [0, 0, -0.05, 0, 0, 0, 1]
+    - gripper: open
+    - move_delta: [0, 0, 0.20, 0, 0, 0, 1]
+
+  # Example: pick with 90° wrist rotation
+  pick_rotated:
+    - move_to: {pose: $pose, height: $height}
+    - move_delta: [0, 0, 0, 0, 0, 0.707, 0.707]  # rotate 90° around Z before descending
+    - move_delta: [0, 0, -0.05, 0, 0, 0, 1]
+    - gripper: close
+    - move_delta: [0, 0, 0.20, 0, 0, 0, 1]
+
+  go_home:
+    - move_to: {pose: home, random_offset: [0.10, 0.10, 0.10]}
+
+# Main sequence (recorded)
+sequence:
+  - go_home
+  - pick: {pose: chip_start, height: 0.200}
+  - place: {pose: chip_target, height: 0.200}
+  - pick: {pose: redbox_start, height: 0.200}
+  - place: {pose: redbox_target, height: 0.200}
+  - pick: {pose: coke_start, height: 0.220}
+  - place: {pose: coke_target, height: 0.220}
+  - pick: {pose: bowl_start, height: 0.170}
+  - place: {pose: bowl_target, height: 0.170}
+  - go_home
+
+# Reset sequence (not recorded) - returns objects to start with jitter
+reset:
+  - pick: {pose: bowl_target, height: 0.170}
+  - place: {pose: bowl_start, height: 0.170, jitter: [0.05, 0.05, 0]}
+  - pick: {pose: coke_target, height: 0.220}
+  - place: {pose: coke_start, height: 0.220, jitter: [0.05, 0.05, 0]}
+  - pick: {pose: redbox_target, height: 0.200}
+  - place: {pose: redbox_start, height: 0.200}
+  - pick: {pose: chip_target, height: 0.200}
+  - place: {pose: chip_start, height: 0.200, jitter: [0.05, 0.05, 0]}
