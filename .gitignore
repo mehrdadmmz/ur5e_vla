@@ -19,7 +19,6 @@ data/*/
 
 # Logs
 *.log
-log.json
 
 # OS
 .DS_Store
