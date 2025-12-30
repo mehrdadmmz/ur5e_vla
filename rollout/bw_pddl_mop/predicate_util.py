@@ -51,12 +51,13 @@ def set_thresholds(thresholds: Dict):
 # Geometric Predicate Detection
 # =============================================================================
 
-def get_beside(obj1: List, obj2: List) -> Optional[Tuple]:
+def get_beside(obj1: List, obj2: List) -> Optional[List[Tuple]]:
     """
     Check if obj1 is beside obj2 (horizontally adjacent).
 
     Only applies to cube blocks (class 2).
-    Returns ('beside', id2, id1) if obj1 is in front of obj2 in Y direction.
+    Returns BOTH ('beside', id1, id2) AND ('beside', id2, id1) since beside is symmetric.
+    Only returns predicates when obj1's id < obj2's id to avoid duplicates.
     """
     if obj1[1] != 2 or obj2[1] != 2:
         return None
@@ -64,20 +65,25 @@ def get_beside(obj1: List, obj2: List) -> Optional[Tuple]:
     id1, cls1, x1, y1, z1, w1, l1, h1 = obj1
     id2, cls2, x2, y2, z2, w2, l2, h2 = obj2
 
+    # Only process each pair once (when id1 < id2)
+    if id1 >= id2:
+        return None
+
     # Get thresholds
     t = _thresholds['beside']
 
-    # Check: Y separation is about one block width, X aligned, same height
-    y_sep = y1 - y2
+    # Check: Y separation is about one block width (absolute), X aligned, same height
+    y_sep = abs(y1 - y2)
     if ((l1 + l2) * t['y_sep_min'] < y_sep < t['y_sep_max'] * (l1 + l2) and
         abs(x1 - x2) < min(w1, w2) * t['x_tolerance'] and
         abs(z1 - z2) < min(h1, h2) * t['z_tolerance']):
-        return ('beside', str(id2), str(id1))
+        # Return both directions since beside is symmetric
+        return [('beside', str(id1), str(id2)), ('beside', str(id2), str(id1))]
 
     return None
 
 
-def get_above(obj1: List, obj2: List) -> Optional[Tuple]:
+def get_above(obj1: List, obj2: List, debug: bool = False) -> Optional[Tuple]:
     """
     Check if obj1 is directly above obj2 (stacked).
 
@@ -95,12 +101,42 @@ def get_above(obj1: List, obj2: List) -> Optional[Tuple]:
 
     # Check: Z difference is about one block height, XY overlap
     z_diff = z1 - z2
+
+    # Debug logging
+    if debug and z_diff > 0:
+        z_min = h1 * t['z_diff_min']
+        z_max = h1 * t['z_diff_max']
+        xy_tol_y = max(l1, l2) * t['xy_tolerance']
+        xy_tol_x = max(w1, w2) * t['xy_tolerance']
+        print(f"  [above check] {id1} over {id2}:")
+        print(f"    z_diff={z_diff:.4f} (need {z_min:.4f} <= z < {z_max:.4f})")
+        print(f"    y_diff={abs(y1-y2):.4f} (need < {xy_tol_y:.4f})")
+        print(f"    x_diff={abs(x1-x2):.4f} (need < {xy_tol_x:.4f})")
+
     if (h1 * t['z_diff_min'] <= z_diff < h1 * t['z_diff_max'] and
         abs(y1 - y2) < max(l1, l2) * t['xy_tolerance'] and
         abs(x1 - x2) < max(w1, w2) * t['xy_tolerance']):
         return ('above', str(id1), str(id2))
 
     return None
+
+
+def print_block_positions(observations: List[List]):
+    """Print all block positions in robot frame for debugging."""
+    print("\n=== Block Positions (Robot Frame) ===")
+    print(f"{'ID':>3} {'Class':>5} {'X':>8} {'Y':>8} {'Z':>8} {'W':>6} {'L':>6} {'H':>6}")
+    print("-" * 60)
+    for obs in observations:
+        if obs[1] in [0, 2, 3]:  # Table, cube, plank
+            obj_id = obs[0]
+            cls = obs[1]
+            x, y, z = obs[2], obs[3], obs[4]
+            if len(obs) > 7:
+                w, l, h = obs[5], obs[6], obs[7]
+                print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f} {w:>6.3f} {l:>6.3f} {h:>6.3f}")
+            else:
+                print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f}")
+    print("=" * 60 + "\n")
 
 
 def get_on_table(obj1: List, obj2: List) -> Optional[Tuple]:
@@ -204,7 +240,9 @@ def get_nothing_beside_predicates(predicates: List[Tuple]) -> List[Tuple]:
 
     for pred in predicates:
         if pred[0] == 'beside':
-            has_neighbor.add(pred[2])  # The object that has something beside it
+            # Both objects in a beside relation have neighbors
+            has_neighbor.add(pred[1])
+            has_neighbor.add(pred[2])
         if pred[0] == 'box':
             all_boxes.add(pred[1])
 
@@ -318,18 +356,24 @@ def get_above_both(predicates: List[Tuple], observations: List[List]) -> List[Tu
 # Main Function
 # =============================================================================
 
-def get_logical_state(observations: List[List]) -> List[Tuple]:
+def get_logical_state(observations: List[List], debug: bool = False) -> List[Tuple]:
     """
     Convert geometric observations to symbolic predicates.
 
     Args:
         observations: List of objects, each as [id, class, x, y, z, w, l, h]
                      Robot is [id, class, x, y, z, gripper_open]
+        debug: If True, print debug info for above detection
 
     Returns:
         List of predicates like [('box', '0'), ('on-table', '0', '9'), ...]
     """
     predicates = []
+
+    # Debug: print block positions
+    if debug:
+        print_block_positions(observations)
+        print("[DEBUG] Checking 'above' predicates:")
 
     # Get class predicates and pairwise relations
     for obj1 in observations:
@@ -343,10 +387,22 @@ def get_logical_state(observations: List[List]) -> List[Tuple]:
             if obj1[0] == obj2[0]:
                 continue
 
-            for get_fn in [get_above, get_beside, get_on_table, get_holding]:
-                pred = get_fn(obj1, obj2)
-                if pred and pred not in predicates:
-                    predicates.append(pred)
+            # Check above with debug
+            result = get_above(obj1, obj2, debug=debug)
+            if result and result not in predicates:
+                predicates.append(result)
+
+            # Check other predicates
+            for get_fn in [get_beside, get_on_table, get_holding]:
+                result = get_fn(obj1, obj2)
+                if result:
+                    # Handle both single predicates and lists of predicates
+                    if isinstance(result, list):
+                        for pred in result:
+                            if pred not in predicates:
+                                predicates.append(pred)
+                    elif result not in predicates:
+                        predicates.append(result)
 
     # Derived predicates
     predicates.extend(get_top_predicates(predicates))
@@ -375,3 +431,71 @@ def is_goal_satisfied(goal: List[Tuple], state: List[Tuple]) -> bool:
 def get_unsatisfied_goals(goal: List[Tuple], state: List[Tuple]) -> List[Tuple]:
     """Get list of goal predicates not yet satisfied."""
     return [g for g in goal if g not in state]
+
+
+# =============================================================================
+# Action Effect Application (for symbolic state updates)
+# =============================================================================
+
+def apply_action_effects(state: List[Tuple], action_name: str, args: Tuple) -> List[Tuple]:
+    """
+    Apply PDDL action effects to update logical state symbolically.
+
+    Used after pick-up/unstack actions when perception is blocked.
+
+    Args:
+        state: Current logical state as list of predicates
+        action_name: Name of the action executed
+        args: Action arguments as tuple of string IDs
+
+    Returns:
+        Updated logical state with action effects applied
+    """
+    new_state = list(state)  # Copy state
+
+    def add_pred(pred):
+        if pred not in new_state:
+            new_state.append(pred)
+
+    def remove_pred(pred):
+        if pred in new_state:
+            new_state.remove(pred)
+
+    if action_name == 'pick-up':
+        # pick-up(?b1, ?t1, ?r1)
+        b1, t1, r1 = args[0], args[1], args[2]
+        # Add effects
+        add_pred(('holding', b1, r1))
+        # Remove effects
+        remove_pred(('hand_free', r1))
+        remove_pred(('top', b1))
+        remove_pred(('on-table', b1, t1))
+
+    elif action_name == 'unstack':
+        # unstack(?b1, ?b2, ?r1)
+        b1, b2, r1 = args[0], args[1], args[2]
+        # Add effects
+        add_pred(('holding', b1, r1))
+        add_pred(('top', b2))
+        # Remove effects
+        remove_pred(('hand_free', r1))
+        remove_pred(('top', b1))
+        remove_pred(('above', b1, b2))
+
+    elif action_name == 'remove-beside':
+        # remove-beside(?b1, ?b2, ?t1, ?r1)
+        b1, b2, t1, r1 = args[0], args[1], args[2], args[3]
+        # Add effects
+        add_pred(('holding', b1, r1))
+        add_pred(('nothing_beside', b2))
+        # Remove effects
+        remove_pred(('hand_free', r1))
+        remove_pred(('top', b1))
+        remove_pred(('on-table', b1, t1))
+        remove_pred(('beside', b1, b2))
+        remove_pred(('beside', b2, b1))
+
+    # Note: place actions (align, put-down, cover, release) don't need
+    # symbolic updates since we re-observe after them
+
+    return new_state

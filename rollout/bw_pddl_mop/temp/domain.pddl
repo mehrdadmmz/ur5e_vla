@@ -24,6 +24,8 @@
     (not-top ?b3)
 
         (not-above ?b1 ?b2)
+        (not-beside ?b1 ?b2)
+        (not-beside ?b2 ?b1)
         (not-hand_free ?r1)
         (not-holding ?b1 ?r1)
         (not-nothing_beside ?b2)
@@ -191,6 +193,38 @@
         (not-top ?b1)
 
         (not (above ?b1 ?b2)) (not-above ?b1 ?b2)
+      )
+  )
+
+  (:action remove-beside
+    :parameters (?b1 ?b2 ?t1 ?r1)
+    :precondition
+      (and
+        (robot ?r1)
+        (table ?t1)
+        (box ?b1)
+        (box ?b2)
+
+        (hand_free ?r1)
+        (top ?b1)
+        (on-table ?b1 ?t1)
+        (beside ?b1 ?b2)
+      )
+    :effect
+      (and
+        (increase (total-cost) 100)
+        (holding ?b1 ?r1)
+        (not (hand_free ?r1)) (not-hand_free ?r1)
+        (not-hand_free ?r1)
+
+        (not (top ?b1)) (not-top ?b1)
+        (not-top ?b1)
+        (not (on-table ?b1 ?t1)) (not-on-table ?b1 ?t1)
+        (not-on-table ?b1 ?t1)
+
+        (not (beside ?b1 ?b2)) (not-beside ?b1 ?b2)
+        (not (beside ?b2 ?b1)) (not-beside ?b2 ?b1)
+        (nothing_beside ?b2)
       )
   )
 )

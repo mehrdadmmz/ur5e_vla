@@ -16,8 +16,8 @@ camera:
 
 aruco:
   # ArUco marker settings
-  marker_size: 0.025       # Marker size in meters (5cm = 0.05m)
-  marker_id: 7             # ID of marker to detect (-1 for any marker)
+  marker_size: 0.032       # Marker size in meters (5cm = 0.05m)
+  marker_id: 2             # ID of marker to detect (-1 for any marker)
   dict_type: "5x5_50"      # ArUco dictionary type
   # Options: 4x4_50, 4x4_100, 4x4_250, 5x5_50, 5x5_100, 5x5_250,
   #          6x6_50, 6x6_100, 6x6_250, original

@@ -24,7 +24,7 @@ import rtde_receive
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from aruco_monitor import ArucoMonitor, create_base_camera_monitor, create_wrist_camera_monitor
-from predicate_util import get_logical_state, is_goal_satisfied, get_unsatisfied_goals, set_thresholds
+from predicate_util import get_logical_state, is_goal_satisfied, get_unsatisfied_goals, set_thresholds, apply_action_effects, print_block_positions
 from pddl_solver import solve_pddl, plan_to_string
 from block_primitives import BlockPrimitives
 
@@ -139,6 +139,7 @@ class BlockWorldPlanner:
             gripper_z_offset=config.get('gripper', {}).get('z_offset', 0.0),
             gripper_open_pos=config.get('gripper', {}).get('open_pos', 0),
             action_delay=config.get('motion', {}).get('action_delay', 0.5),
+            beside_gap=config.get('motion', {}).get('beside_gap', 0.06),
         )
 
         # Table and robot IDs
@@ -235,10 +236,15 @@ class BlockWorldPlanner:
             print_status=print_status,
         )
 
-    def get_logical_state(self, print_status: bool = True) -> List[Tuple]:
-        """Get current logical state from perception."""
+    def get_logical_state(self, print_status: bool = True, debug: bool = False) -> List[Tuple]:
+        """Get current logical state from perception.
+
+        Args:
+            print_status: Print ArUco detection status
+            debug: Print detailed debug info for above detection
+        """
         observations, stale_ids = self.get_observations(print_status=print_status)
-        return get_logical_state(observations)
+        return get_logical_state(observations, debug=debug)
 
     def plan(self, goal: List[Tuple]) -> Optional[List[Tuple]]:
         """
@@ -294,8 +300,13 @@ class BlockWorldPlanner:
             print(f"Step {i+1}/{len(plan)}: {action_name}({', '.join(args)})")
             print('='*50)
 
-            # Get fresh observations (keeps previous positions if marker not visible)
-            observations, stale_ids = self.get_observations(print_status=True)
+            # Get fresh observations and logical state
+            logical_state = self.get_logical_state(print_status=True)
+            observations, _ = self.get_observations(print_status=False)
+
+            print(f"\nCurrent logical state ({len(logical_state)} predicates):")
+            for pred in sorted(logical_state, key=lambda x: x[0]):
+                print(f"  {pred}")
 
             # Execute action
             success = self.primitives.execute_action(action_name, args, observations)
@@ -311,14 +322,23 @@ class BlockWorldPlanner:
                 self.move_to_init_pose()
                 time.sleep(1.0)  # Wait for perception to update
 
-                # Get updated observations
-                self.get_observations(print_status=True)
+                # Get updated observations and logical state
+                logical_state = self.get_logical_state(print_status=True)
+                print(f"\nUpdated logical state after action ({len(logical_state)} predicates):")
+                for pred in sorted(logical_state, key=lambda x: x[0]):
+                    print(f"  {pred}")
 
         return True
 
     def run(self, goal: List[Tuple], max_replans: int = 100) -> bool:
         """
         Run the full perception-planning-execution loop.
+
+        Strategy:
+        - After pick-up/unstack: Apply PDDL effects symbolically, then replan
+          (since robot arm blocks wrist camera when holding a block)
+        - After place actions (align, put-down, cover, release): Re-observe
+          from perception, update state, then replan
 
         Args:
             goal: List of goal predicates
@@ -338,52 +358,113 @@ class BlockWorldPlanner:
         print("Waiting for perception to stabilize...")
         time.sleep(2.0)
 
-        for attempt in range(max_replans):
-            print(f"\n--- Attempt {attempt + 1}/{max_replans} ---")
+        # Track logical state (can be from perception or symbolic updates)
+        logical_state = None
+        use_symbolic_state = False  # True after pick actions
 
-            # Check if we have blocks detected
-            logical_state = self.get_logical_state()
+        for attempt in range(max_replans):
+            print(f"\n{'='*60}")
+            print(f"PLANNING CYCLE {attempt + 1}/{max_replans}")
+            print('='*60)
+
+            # Get state: either from perception or use symbolically updated state
+            if use_symbolic_state and logical_state is not None:
+                print("[Using symbolically updated state after pick action]")
+                use_symbolic_state = False  # Reset for next cycle
+            else:
+                # Get fresh state from perception
+                # Enable debug on first few cycles to help diagnose issues
+                debug_mode = (attempt < 3) and self.config.get('debug_predicates', False)
+                logical_state = self.get_logical_state(print_status=True, debug=debug_mode)
+
             num_blocks = sum(1 for p in logical_state if p[0] == 'box')
+
             if num_blocks == 0:
                 print(f"No blocks detected! Waiting 5s for markers to appear...")
                 time.sleep(5.0)
                 continue
 
-            print(f"Detected {num_blocks} blocks")
+            print(f"\nDetected {num_blocks} blocks")
+            print(f"Current logical state ({len(logical_state)} predicates):")
+            for pred in sorted(logical_state, key=lambda x: x[0]):
+                print(f"  {pred}")
 
-            # Plan
-            plan = self.plan(goal)
-
-            if plan is None:
-                print("Planning failed! Waiting 5s for perception update...")
-                time.sleep(5.0)
-                continue
-
-            if len(plan) == 0:
-                print("Goal achieved!")
-                return True
-
-            # Execute
-            success = self.execute_plan(plan)
-
-            if not success:
-                print("Execution failed, replanning...")
-                time.sleep(1.0)
-                continue
-
-            # Verify goal
-            time.sleep(1.0)  # Wait for things to settle
-            logical_state = self.get_logical_state()
-
+            # Check if goal already satisfied
             if is_goal_satisfied(goal, logical_state):
                 print("\n" + "="*60)
                 print("GOAL ACHIEVED!")
                 print("="*60)
                 return True
+
+            # Show unsatisfied goals
+            unsatisfied = get_unsatisfied_goals(goal, logical_state)
+            print(f"\nUnsatisfied goals ({len(unsatisfied)}):")
+            for g in unsatisfied:
+                print(f"  {g}")
+
+            # Generate plan for current state
+            print("\nPlanning...")
+            plan = solve_pddl(logical_state, goal, debug=False)
+
+            if plan is None:
+                print("Planning failed! Waiting 5s for perception update...")
+                use_symbolic_state = False  # Force re-observation
+                time.sleep(5.0)
+                continue
+
+            if len(plan) == 0:
+                print("\n" + "="*60)
+                print("GOAL ACHIEVED!")
+                print("="*60)
+                return True
+
+            print(f"\nPlan ({len(plan)} steps):")
+            print(plan_to_string(plan))
+
+            # Execute only the FIRST action of the plan
+            action_name, args = plan[0]
+            print(f"\n{'='*50}")
+            print(f"EXECUTING: {action_name}({', '.join(args)})")
+            print('='*50)
+
+            # Get observations for action execution
+            observations, _ = self.get_observations(print_status=False)
+
+            # Execute action
+            success = self.primitives.execute_action(action_name, args, observations)
+
+            if not success:
+                print(f"Action failed: {action_name}")
+                print("Will replan on next cycle...")
+                use_symbolic_state = False  # Force re-observation
+                time.sleep(1.0)
+                continue
+
+            # Handle state update based on action type
+            if action_name in ['pick-up', 'unstack', 'remove-beside']:
+                # Apply PDDL effects symbolically (camera blocked by robot arm)
+                print(f"\n[Applying {action_name} effects symbolically]")
+                logical_state = apply_action_effects(logical_state, action_name, args)
+                use_symbolic_state = True
+
+                print(f"Updated logical state after {action_name} ({len(logical_state)} predicates):")
+                for pred in sorted(logical_state, key=lambda x: x[0]):
+                    print(f"  {pred}")
+
+                # Continue immediately to next planning cycle (will use symbolic state)
             else:
-                unsatisfied = get_unsatisfied_goals(goal, logical_state)
-                print(f"\nGoal not fully satisfied. Unsatisfied: {unsatisfied}")
-                print("Replanning...")
+                # Place actions: return to init pose and re-observe
+                print("\nReturning to init pose for perception update...")
+                self.move_to_init_pose()
+                time.sleep(1.0)
+
+                # Get fresh state from perception
+                logical_state = self.get_logical_state(print_status=True)
+                use_symbolic_state = False
+
+                print(f"\nUpdated logical state from perception ({len(logical_state)} predicates):")
+                for pred in sorted(logical_state, key=lambda x: x[0]):
+                    print(f"  {pred}")
 
         print("\nMax replanning attempts exceeded!")
         return False

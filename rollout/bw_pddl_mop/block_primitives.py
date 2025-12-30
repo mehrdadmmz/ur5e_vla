@@ -29,6 +29,7 @@ class BlockPrimitives:
         place_clearance: float = 0.005,  # Clearance when placing
         gripper_z_offset: float = 0.0,  # Distance from flange to gripper fingertips
         action_delay: float = 0.5,      # Delay between motion steps
+        beside_gap: float = 0.06,       # Gap between blocks when placing beside
         gripper_open_pos: int = 0,
         gripper_close_pos: int = 255,
         gripper_speed: int = 100,
@@ -48,6 +49,7 @@ class BlockPrimitives:
             place_clearance: Extra clearance when placing
             gripper_z_offset: Distance from robot flange to gripper fingertips
             action_delay: Delay between motion steps in seconds
+            beside_gap: Gap between blocks when placing beside (for bridge bases)
             gripper_open_pos: Gripper position for open (0-255)
             gripper_close_pos: Gripper position for close (0-255)
             gripper_speed: Gripper speed (0-255)
@@ -63,6 +65,7 @@ class BlockPrimitives:
         self.place_clearance = place_clearance
         self.gripper_z_offset = gripper_z_offset
         self.action_delay = action_delay
+        self.beside_gap = beside_gap
         self.gripper_open_pos = gripper_open_pos
         self.gripper_close_pos = gripper_close_pos
         self.gripper_speed = gripper_speed
@@ -215,6 +218,129 @@ class BlockPrimitives:
         print(f"Picked block {block_id}")
         return True
 
+    def unstack(
+        self,
+        block_id: int,
+        under_block_id: int,
+        robot_id: int,
+        observations: List[List]
+    ) -> bool:
+        """
+        Unstack a block from on top of another block.
+
+        PDDL action: (unstack ?b1 ?b2 ?r1)
+
+        Args:
+            block_id: ID of block to pick (on top)
+            under_block_id: ID of block underneath (unused, position from observations)
+            robot_id: ID of robot (unused, for PDDL compatibility)
+            observations: Current world state
+
+        Returns:
+            True if successful
+        """
+        block = self._get_block_from_obs(block_id, observations)
+        if block is None:
+            print(f"Block {block_id} not found in observations")
+            return False
+
+        # Block position and dimensions
+        # Note: z is the marker position = TOP of block (not center)
+        x, y, z = block[2], block[3], block[4]
+        w, l, h = block[5], block[6], block[7]
+
+        # Grasp point: slightly below block top surface
+        grasp_z = z - self.grasp_depth + self.gripper_z_offset
+
+        # Approach point: above the block
+        approach_pos = np.array([x, y, grasp_z + self.approach_height])
+        grasp_pos = np.array([x, y, grasp_z])
+
+        print(f"Unstacking block {block_id} from block {under_block_id} at [{x:.3f}, {y:.3f}, {z:.3f}]")
+
+        # Execute pick sequence (same as pick_up)
+        self._open_gripper()
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to grasp
+        if not self._move_linear(self._pose_to_list(grasp_pos)):
+            return False
+
+        # Grasp
+        self._close_gripper()
+
+        # Lift
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Unstacked block {block_id}")
+        return True
+
+    def remove_beside(
+        self,
+        block_id: int,
+        beside_block_id: int,
+        table_id: int,
+        robot_id: int,
+        observations: List[List]
+    ) -> bool:
+        """
+        Pick up a block that is beside another block.
+
+        PDDL action: (remove-beside ?b1 ?b2 ?t1 ?r1)
+
+        Args:
+            block_id: ID of block to pick (beside another)
+            beside_block_id: ID of block it's beside (unused, position from observations)
+            table_id: ID of table (unused)
+            robot_id: ID of robot (unused)
+            observations: Current world state
+
+        Returns:
+            True if successful
+        """
+        block = self._get_block_from_obs(block_id, observations)
+        if block is None:
+            print(f"Block {block_id} not found in observations")
+            return False
+
+        # Block position and dimensions
+        x, y, z = block[2], block[3], block[4]
+        w, l, h = block[5], block[6], block[7]
+
+        # Grasp point: slightly below block top surface
+        grasp_z = z - self.grasp_depth + self.gripper_z_offset
+
+        # Approach point: above the block
+        approach_pos = np.array([x, y, grasp_z + self.approach_height])
+        grasp_pos = np.array([x, y, grasp_z])
+
+        print(f"Removing block {block_id} from beside block {beside_block_id} at [{x:.3f}, {y:.3f}, {z:.3f}]")
+
+        # Execute pick sequence (same as pick_up)
+        self._open_gripper()
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to grasp
+        if not self._move_linear(self._pose_to_list(grasp_pos)):
+            return False
+
+        # Grasp
+        self._close_gripper()
+
+        # Lift
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Removed block {block_id} from beside")
+        return True
+
     def put_down(
         self,
         block_id: int,
@@ -321,7 +447,7 @@ class BlockPrimitives:
 
         # Place beside: offset in Y direction
         place_x = tx
-        place_y = ty + tl / 2 + bl / 2 + 0.01  # Small gap
+        place_y = ty + tl / 2 + bl / 2 + self.beside_gap
         table_z = table[4] if table else 0.0
         # Block is held with grasp at grasp_depth below its top
         # We want block_bottom = table_z + clearance
@@ -428,9 +554,11 @@ class BlockPrimitives:
         observations: List[List]
     ) -> bool:
         """
-        Release block onto table (emergency drop).
+        Release block onto an empty spot on the table.
 
         PDDL action: (release ?b1 ?t1 ?r1)
+
+        Finds an empty spot on the table away from other blocks and places there.
 
         Args:
             block_id: ID of block being held
@@ -444,22 +572,97 @@ class BlockPrimitives:
         table = self._get_block_from_obs(table_id, observations)
         block = self._get_block_from_obs(block_id, observations)
 
-        # Get current position
-        current_pos = self.get_gripper_position()
+        if block is None:
+            print(f"Block {block_id} not found in observations")
+            return False
 
-        # Move to safe height above current position
-        safe_pos = current_pos.copy()
-        safe_pos[2] = 0.3  # Safe height
+        # Block dimensions
+        bw, bl, bh = block[5], block[6], block[7]
 
-        print(f"Releasing block {block_id}")
+        # Get table Z (surface height)
+        table_z = table[4] if table else 0.0
 
-        # Move to safe height
-        self._move_to_pose(self._pose_to_list(safe_pos))
+        # Find empty spot: collect positions of all other blocks on table
+        other_blocks = []
+        for obs in observations:
+            if obs[0] != block_id and obs[1] in [2, 3]:  # Other cubes/planks
+                other_blocks.append((obs[2], obs[3]))  # (x, y)
+
+        # Find an empty spot near existing blocks but not colliding
+        min_dist = 0.08  # Minimum distance from other blocks
+
+        # Calculate center of existing blocks as base
+        if other_blocks:
+            avg_x = sum(x for x, y in other_blocks) / len(other_blocks)
+            avg_y = sum(y for x, y in other_blocks) / len(other_blocks)
+        else:
+            avg_x, avg_y = 0.0, 0.5
+
+        # Search for empty spot near the cluster, with offset to avoid collision
+        # Try positions in a spiral pattern around the cluster center
+        place_x, place_y = avg_x, avg_y
+        found = False
+
+        # Search offsets: start close, move outward
+        offsets = []
+        for r in [0.08, 0.12, 0.16, 0.20]:  # Radii
+            for angle_idx in range(8):  # 8 directions
+                angle = angle_idx * (3.14159 / 4)  # 45 degree increments
+                dx = r * np.cos(angle)
+                dy = r * np.sin(angle)
+                offsets.append((dx, dy))
+
+        for dx, dy in offsets:
+            candidate_x = avg_x + dx
+            candidate_y = avg_y + dy
+
+            # Check if within table bounds (approximate)
+            if not (-0.3 < candidate_x < 0.3 and 0.3 < candidate_y < 0.7):
+                continue
+
+            # Check if far enough from all other blocks
+            is_empty = True
+            for (ox, oy) in other_blocks:
+                dist = ((candidate_x - ox)**2 + (candidate_y - oy)**2)**0.5
+                if dist < min_dist:
+                    is_empty = False
+                    break
+
+            if is_empty:
+                place_x, place_y = candidate_x, candidate_y
+                found = True
+                break
+
+        if not found:
+            # Fallback: place at offset from center
+            place_x, place_y = avg_x + 0.15, avg_y
+
+        # Place position on table
+        # Block is held with grasp at grasp_depth below its top
+        # We want block_bottom = table_z + clearance
+        place_z = table_z + bh - self.grasp_depth + self.place_clearance + self.gripper_z_offset
+
+        approach_pos = np.array([place_x, place_y, place_z + self.approach_height])
+        place_pos = np.array([place_x, place_y, place_z])
+
+        print(f"Releasing block {block_id} to empty spot at [{place_x:.3f}, {place_y:.3f}]")
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to place
+        if not self._move_linear(self._pose_to_list(place_pos)):
+            return False
 
         # Release
         self._open_gripper()
 
-        print(f"Released block {block_id}")
+        # Retract
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Released block {block_id} on table")
         return True
 
     # =========================================================================
@@ -488,6 +691,8 @@ class BlockPrimitives:
 
         action_map = {
             'pick-up': lambda: self.pick_up(*int_args, observations),
+            'unstack': lambda: self.unstack(*int_args, observations),
+            'remove-beside': lambda: self.remove_beside(*int_args, observations),
             'put-down': lambda: self.put_down(*int_args, observations),
             'align': lambda: self.align(*int_args, observations),
             'cover': lambda: self.cover(*int_args, observations),
