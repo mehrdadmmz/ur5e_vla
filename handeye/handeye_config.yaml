@@ -1,0 +1,28 @@
+# Hand-Eye Calibration Configuration
+# ===================================
+
+robot:
+  ip: "192.168.56.101"
+  speed: 0.3              # Joint speed (rad/s) - slower is safer
+  acceleration: 0.3       # Joint acceleration (rad/s^2)
+
+camera:
+  # Use the wrist camera for eye-in-hand calibration
+  # Use the base camera for eye-to-hand calibration
+  serial: "243322072780"   # wrist camera (from your config)
+  # serial: "337322072205"  # base camera (alternative)
+  resolution: [640, 480]
+  fps: 30
+
+aruco:
+  # ArUco marker settings
+  marker_size: 0.025       # Marker size in meters (5cm = 0.05m)
+  marker_id: 7             # ID of marker to detect (-1 for any marker)
+  dict_type: "5x5_50"      # ArUco dictionary type
+  # Options: 4x4_50, 4x4_100, 4x4_250, 5x5_50, 5x5_100, 5x5_250,
+  #          6x6_50, 6x6_100, 6x6_250, original
+
+# Marker position in robot base frame (where the ArUco marker is placed)
+marker_position: [0.00, 0.45, 0.0]  # [x, y, z] in meters
+
+output_dir: "handeye_data"

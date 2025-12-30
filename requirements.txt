@@ -4,6 +4,7 @@ opencv-python
 pyyaml
 pyrealsense2
 h5py
+scipy
 
 # UR5e robot control
 ur-rtde

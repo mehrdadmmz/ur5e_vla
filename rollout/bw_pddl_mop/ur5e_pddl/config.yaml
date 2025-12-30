@@ -1,0 +1,65 @@
+# Block World Planner Configuration
+# ==================================
+
+robot:
+  ip: "192.168.56.101"
+  speed: 0.3              # Joint speed (rad/s)
+  acceleration: 0.3       # Joint acceleration (rad/s^2)
+
+gripper:
+  port: 63352
+
+# Camera configuration
+# Use 'base' for fixed base-mounted camera
+# Use 'wrist' for wrist-mounted camera (requires hand-eye calibration)
+camera:
+  type: "wrist"            # "base" or "wrist"
+  serial: "337322072205"  # Base camera serial
+
+  # For base camera: fixed transform from camera to robot base frame
+  # Update this with your actual calibration!
+  # T_cam_base:
+  #   - [0.0761, 0.8458, -0.5280, 1.038]
+  #   - [0.9950, -0.0305, 0.0946, 0.009]
+  #   - [0.0640, -0.5326, -0.8439, 0.416]
+  #   - [0.0, 0.0, 0.0, 1.0]
+
+  # For wrist camera: path to hand-eye calibration file
+  calibration_file: "../../../handeye/handeye_data/calibration_20251229_154016.npy"
+
+aruco:
+  marker_size: 0.032      # Marker size in meters (32mm)
+
+motion:
+  approach_height: 0.10   # Height above block for approach (meters)
+  grasp_depth: 0.02       # How deep to grasp below block top (meters)
+
+# Object IDs
+table_id: 9               # ID for table object
+robot_id: 8               # ID for robot/gripper object
+table_z: 0.0              # Z coordinate of table surface
+
+# Block dimensions by marker ID
+# Format: {marker_id: [width, length, height]}
+block_dims:
+  0: [0.0375, 0.0375, 0.06]   # Cube
+  1: [0.045, 0.045, 0.03]     # Cube
+  2: [0.045, 0.045, 0.03]     # Cube
+  3: [0.0375, 0.0375, 0.06]   # Cube
+  4: [0.15, 0.04, 0.02]       # Plank
+  5: [0.0375, 0.0375, 0.06]   # Cube
+  6: [0.15, 0.05, 0.03]       # Plank
+  7: [0.0375, 0.0375, 0.06]   # Cube
+
+# Block class by marker ID (2=cube, 3=plank)
+block_class:
+  0: 2
+  1: 2
+  2: 2
+  3: 2
+  4: 3
+  5: 2
+  6: 3
+  7: 2
+
+visual: true             # Show ArUco detection window
