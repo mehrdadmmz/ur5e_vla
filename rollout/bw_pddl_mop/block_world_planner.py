@@ -154,6 +154,8 @@ class BlockWorldPlanner:
         self._init_perception(config)
 
         # Block primitives
+        motion_cfg = config.get('motion', {})
+        gripper_cfg = config.get('gripper', {})
         self.primitives = BlockPrimitives(
             rtde_c=self.rtde_c,
             rtde_r=self.rtde_r,
@@ -161,14 +163,25 @@ class BlockWorldPlanner:
             aruco_monitor=self.wrist_monitor,  # For pick recalibration
             speed=config['robot'].get('speed', 0.3),
             acceleration=config['robot'].get('acceleration', 0.3),
-            approach_height=config.get('motion', {}).get('approach_height', 0.10),
-            grasp_depth=config.get('motion', {}).get('grasp_depth', 0.02),
-            gripper_z_offset=config.get('gripper', {}).get('z_offset', 0.0),
-            gripper_open_pos=config.get('gripper', {}).get('open_pos', 0),
-            action_delay=config.get('motion', {}).get('action_delay', 0.5),
-            beside_gap=config.get('motion', {}).get('beside_gap', 0.06),
-            pick_recalibrate_tolerance=config.get('motion', {}).get('pick_recalibrate_tolerance', 0.01),
-            max_recalibrate_attempts=config.get('motion', {}).get('max_recalibrate_attempts', 3),
+            approach_height=motion_cfg.get('approach_height', 0.10),
+            grasp_depth=motion_cfg.get('grasp_depth', 0.02),
+            place_clearance=motion_cfg.get('place_clearance', 0.005),
+            gripper_z_offset=gripper_cfg.get('z_offset', 0.0),
+            action_delay=motion_cfg.get('action_delay', 0.5),
+            beside_gap=motion_cfg.get('beside_gap', 0.06),
+            pick_recalibrate_tolerance=motion_cfg.get('pick_recalibrate_tolerance', 0.01),
+            max_recalibrate_attempts=motion_cfg.get('max_recalibrate_attempts', 3),
+            recalibrate_wait=motion_cfg.get('recalibrate_wait', 0.3),
+            linear_speed_factor=motion_cfg.get('linear_speed_factor', 0.5),
+            gripper_open_pos=gripper_cfg.get('open_pos', 0),
+            gripper_close_pos=gripper_cfg.get('close_pos', 255),
+            gripper_speed=gripper_cfg.get('speed', 100),
+            gripper_force=gripper_cfg.get('force', 50),
+            gripper_open_wait=gripper_cfg.get('open_wait', 0.5),
+            gripper_close_wait=gripper_cfg.get('close_wait', 1.5),
+            gripper_open_margin=gripper_cfg.get('open_margin', 10),
+            release_min_dist=motion_cfg.get('release_min_dist', 0.08),
+            table_bounds=config.get('table_bounds', None),
         )
 
         # Table and robot IDs
@@ -222,8 +235,21 @@ class BlockWorldPlanner:
     def _init_perception(self, config: dict):
         """Initialize ArUco monitor based on config."""
         camera_cfg = config['camera']
+        aruco_cfg = config.get('aruco', {})
         camera_type = camera_cfg.get('type', 'base')
         position_offset = camera_cfg.get('offset', [0.0, 0.0, 0.0])
+
+        # Common ArUco parameters
+        aruco_params = dict(
+            marker_length=aruco_cfg.get('marker_size', 0.032),
+            visual=config.get('visual', False),
+            position_offset=position_offset,
+            max_reproj_error=aruco_cfg.get('max_reproj_error', 2.0),
+            min_sharpness=aruco_cfg.get('min_sharpness', 30.0),
+            confident_reproj=aruco_cfg.get('confident_reproj', 1.0),
+            confident_sharpness=aruco_cfg.get('confident_sharpness', 50.0),
+            stale_age=aruco_cfg.get('stale_age', 2.0),
+        )
 
         if camera_type == 'base':
             # Base-mounted camera with fixed transform
@@ -231,9 +257,7 @@ class BlockWorldPlanner:
             self.aruco_monitor = create_base_camera_monitor(
                 camera_serial=camera_cfg['serial'],
                 T_cam_base=T_cam_base,
-                marker_length=config.get('aruco', {}).get('marker_size', 0.032),
-                visual=config.get('visual', False),
-                position_offset=position_offset,
+                **aruco_params,
             )
         elif camera_type == 'wrist':
             # Wrist-mounted camera with hand-eye calibration
@@ -242,9 +266,7 @@ class BlockWorldPlanner:
                 camera_serial=camera_cfg['serial'],
                 X_ee_cam=X_ee_cam,
                 rtde_r=self.rtde_r,
-                marker_length=config.get('aruco', {}).get('marker_size', 0.032),
-                visual=config.get('visual', False),
-                position_offset=position_offset,
+                **aruco_params,
             )
         else:
             raise ValueError(f"Unknown camera type: {camera_type}")
@@ -280,7 +302,7 @@ class BlockWorldPlanner:
         observations, stale_ids, uncertain_ids = self.get_observations(print_status=print_status)
         return get_logical_state(observations, debug=debug)
 
-    def reobserve_uncertain_blocks(self, uncertain_ids: List[int], hover_height: float = 0.15) -> bool:
+    def reobserve_uncertain_blocks(self, uncertain_ids: List[int], hover_height: Optional[float] = None) -> bool:
         """
         Re-observe uncertain blocks by moving robot above each one.
 
@@ -288,13 +310,19 @@ class BlockWorldPlanner:
 
         Args:
             uncertain_ids: List of marker IDs with uncertain detection
-            hover_height: Height above block to hover (meters)
+            hover_height: Height above block to hover (meters). Defaults to config.
 
         Returns:
             True if any blocks were re-observed successfully
         """
         if not uncertain_ids:
             return False
+
+        # Get config values
+        motion_cfg = self.config.get('motion', {})
+        if hover_height is None:
+            hover_height = motion_cfg.get('hover_height', 0.15)
+        observation_wait = motion_cfg.get('observation_wait', 0.5)
 
         print(f"\n[Re-observation] Moving to observe uncertain blocks: {uncertain_ids}")
         reobserved = False
@@ -321,7 +349,7 @@ class BlockWorldPlanner:
             self.rtde_c.moveL(pose, speed, accel)
 
             # Wait for detection to update
-            time.sleep(0.5)
+            time.sleep(observation_wait)
 
             # Check if detection improved
             conf = self.aruco_monitor.get_confidence(marker_id)
@@ -335,7 +363,7 @@ class BlockWorldPlanner:
         holding_block = not self.primitives.is_gripper_open()
         print(f"  [Re-observation] Returning to init pose... (holding={holding_block})")
         self.move_to_init_pose(open_gripper=not holding_block)
-        time.sleep(0.5)
+        time.sleep(observation_wait)
 
         return reobserved
 

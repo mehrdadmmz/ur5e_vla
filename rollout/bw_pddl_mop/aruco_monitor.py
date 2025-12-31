@@ -56,6 +56,12 @@ class ArucoMonitor:
         block_dims: Optional[Dict] = None,
         block_class: Optional[Dict] = None,
         position_offset: Optional[List[float]] = None,
+        # Confidence thresholds
+        max_reproj_error: float = 2.0,
+        min_sharpness: float = 30.0,
+        confident_reproj: float = 1.0,
+        confident_sharpness: float = 50.0,
+        stale_age: float = 2.0,
     ):
         """
         Initialize ArUco monitor.
@@ -73,6 +79,11 @@ class ArucoMonitor:
             block_dims: Custom block dimensions {marker_id: (w, l, h)}
             block_class: Custom block classes {marker_id: class}
             position_offset: [x, y, z] offset to apply to detected positions in base frame
+            max_reproj_error: Max reprojection error in pixels (reject if higher)
+            min_sharpness: Min corner sharpness (reject if lower)
+            confident_reproj: Reprojection error threshold for confident detection
+            confident_sharpness: Sharpness threshold for confident detection
+            stale_age: Seconds after which marker data is considered stale
         """
         self.camera_serial = camera_serial
         self.camera_type = camera_type
@@ -108,10 +119,11 @@ class ArucoMonitor:
         self._thread = None
 
         # Confidence thresholds
-        self.max_reproj_error = 2.0      # pixels - reject if higher
-        self.min_sharpness = 30.0        # gradient magnitude - reject if lower
-        self.confident_reproj = 1.0      # pixels - confident if below this
-        self.confident_sharpness = 50.0  # gradient magnitude - confident if above this
+        self.max_reproj_error = max_reproj_error
+        self.min_sharpness = min_sharpness
+        self.confident_reproj = confident_reproj
+        self.confident_sharpness = confident_sharpness
+        self.stale_age = stale_age
 
         # Initialize
         self._init_aruco()
@@ -433,15 +445,18 @@ class ArucoMonitor:
         with self.lock:
             return set(self.currently_visible)
 
-    def get_stale_markers(self, max_age: float = 2.0) -> set:
+    def get_stale_markers(self, max_age: Optional[float] = None) -> set:
         """Get set of marker IDs with stale (old) data.
 
         Args:
-            max_age: Maximum age in seconds before data is considered stale
+            max_age: Maximum age in seconds before data is considered stale.
+                     Defaults to self.stale_age from config.
 
         Returns:
             Set of marker IDs with data older than max_age
         """
+        if max_age is None:
+            max_age = self.stale_age
         current_time = time.time()
         with self.lock:
             stale = set()

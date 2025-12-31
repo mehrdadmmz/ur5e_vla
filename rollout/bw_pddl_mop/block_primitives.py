@@ -33,10 +33,17 @@ class BlockPrimitives:
         beside_gap: float = 0.06,       # Gap between blocks when placing beside
         pick_recalibrate_tolerance: float = 0.01,  # Max position change to accept (meters)
         max_recalibrate_attempts: int = 3,  # Max recalibration attempts
+        recalibrate_wait: float = 0.3,  # Wait for camera to stabilize (seconds)
+        linear_speed_factor: float = 0.5,  # Speed multiplier for linear moves
         gripper_open_pos: int = 0,
         gripper_close_pos: int = 255,
         gripper_speed: int = 100,
         gripper_force: int = 50,
+        gripper_open_wait: float = 0.5,  # Wait after opening gripper
+        gripper_close_wait: float = 1.5,  # Fallback wait if no blocking move
+        gripper_open_margin: int = 10,   # Margin for "is open" check
+        release_min_dist: float = 0.08,  # Min distance from other blocks for release
+        table_bounds: Optional[Dict] = None,  # {x_min, x_max, y_min, y_max}
     ):
         """
         Initialize block primitives.
@@ -56,10 +63,17 @@ class BlockPrimitives:
             beside_gap: Gap between blocks when placing beside (for bridge bases)
             pick_recalibrate_tolerance: Position change tolerance for recalibration (meters)
             max_recalibrate_attempts: Maximum recalibration attempts before proceeding
+            recalibrate_wait: Wait time for camera to stabilize during recalibration
+            linear_speed_factor: Speed multiplier for linear moves
             gripper_open_pos: Gripper position for open (0-255)
             gripper_close_pos: Gripper position for close (0-255)
             gripper_speed: Gripper speed (0-255)
             gripper_force: Gripper force (0-255)
+            gripper_open_wait: Wait time after opening gripper
+            gripper_close_wait: Fallback wait time if no blocking move available
+            gripper_open_margin: Position margin for "is open" check
+            release_min_dist: Minimum distance from other blocks for release action
+            table_bounds: Workspace bounds for release {x_min, x_max, y_min, y_max}
         """
         self.rtde_c = rtde_c
         self.rtde_r = rtde_r
@@ -75,10 +89,17 @@ class BlockPrimitives:
         self.beside_gap = beside_gap
         self.pick_recalibrate_tolerance = pick_recalibrate_tolerance
         self.max_recalibrate_attempts = max_recalibrate_attempts
+        self.recalibrate_wait = recalibrate_wait
+        self.linear_speed_factor = linear_speed_factor
         self.gripper_open_pos = gripper_open_pos
         self.gripper_close_pos = gripper_close_pos
         self.gripper_speed = gripper_speed
         self.gripper_force = gripper_force
+        self.gripper_open_wait = gripper_open_wait
+        self.gripper_close_wait = gripper_close_wait
+        self.gripper_open_margin = gripper_open_margin
+        self.release_min_dist = release_min_dist
+        self.table_bounds = table_bounds or {'x_min': -0.3, 'x_max': 0.3, 'y_min': 0.3, 'y_max': 0.7}
 
         # Default orientation: gripper pointing down
         # This is a 180 degree rotation around X (gripper Z pointing down)
@@ -114,7 +135,7 @@ class BlockPrimitives:
     def _move_linear(self, pose: List[float], speed: Optional[float] = None) -> bool:
         """Move robot linearly to target pose."""
         if speed is None:
-            speed = self.speed * 0.5  # Slower for linear moves
+            speed = self.speed * self.linear_speed_factor
 
         self.rtde_c.moveL(pose, speed, self.acceleration)
         return True
@@ -123,7 +144,7 @@ class BlockPrimitives:
         """Open the gripper."""
         if self.gripper:
             self.gripper.move(self.gripper_open_pos, self.gripper_speed, self.gripper_force)
-            time.sleep(0.5)
+            time.sleep(self.gripper_open_wait)
 
     def _close_gripper(self):
         """Close the gripper and wait until it finishes moving."""
@@ -137,7 +158,7 @@ class BlockPrimitives:
             else:
                 # Fallback to non-blocking with longer wait
                 self.gripper.move(self.gripper_close_pos, self.gripper_speed, self.gripper_force)
-                time.sleep(1.5)
+                time.sleep(self.gripper_close_wait)
             time.sleep(0.2)  # Extra settling time
 
     def _get_block_from_obs(self, block_id: int, observations: List[List]) -> Optional[List]:
@@ -157,7 +178,7 @@ class BlockPrimitives:
         if self.gripper:
             pos = self.gripper.get_current_position()
             # Consider open if at or below the configured open position
-            return pos <= self.gripper_open_pos + 10  # Small margin
+            return pos <= self.gripper_open_pos + self.gripper_open_margin
         return True
 
     # =========================================================================
@@ -195,7 +216,7 @@ class BlockPrimitives:
 
             # Re-observe block from above (if aruco_monitor available)
             if self.aruco_monitor is not None:
-                time.sleep(0.3)  # Wait for camera to stabilize
+                time.sleep(self.recalibrate_wait)  # Wait for camera to stabilize
 
                 new_pos = self.aruco_monitor.get_marker_position(block_id)
                 if new_pos is not None:
@@ -604,15 +625,14 @@ class BlockPrimitives:
             if obs[0] != block_id and obs[1] in [2, 3]:  # Other cubes/planks
                 other_blocks.append((obs[2], obs[3]))  # (x, y)
 
-        # Find an empty spot near existing blocks but not colliding
-        min_dist = 0.08  # Minimum distance from other blocks
-
         # Calculate center of existing blocks as base
+        tb = self.table_bounds
         if other_blocks:
             avg_x = sum(x for x, y in other_blocks) / len(other_blocks)
             avg_y = sum(y for x, y in other_blocks) / len(other_blocks)
         else:
-            avg_x, avg_y = 0.0, 0.5
+            avg_x = (tb['x_min'] + tb['x_max']) / 2
+            avg_y = (tb['y_min'] + tb['y_max']) / 2
 
         # Search for empty spot near the cluster, with offset to avoid collision
         # Try positions in a spiral pattern around the cluster center
@@ -621,9 +641,10 @@ class BlockPrimitives:
 
         # Search offsets: start close, move outward
         offsets = []
-        for r in [0.08, 0.12, 0.16, 0.20]:  # Radii
+        for r in [self.release_min_dist, self.release_min_dist * 1.5,
+                  self.release_min_dist * 2, self.release_min_dist * 2.5]:
             for angle_idx in range(8):  # 8 directions
-                angle = angle_idx * (3.14159 / 4)  # 45 degree increments
+                angle = angle_idx * (np.pi / 4)  # 45 degree increments
                 dx = r * np.cos(angle)
                 dy = r * np.sin(angle)
                 offsets.append((dx, dy))
@@ -632,15 +653,16 @@ class BlockPrimitives:
             candidate_x = avg_x + dx
             candidate_y = avg_y + dy
 
-            # Check if within table bounds (approximate)
-            if not (-0.3 < candidate_x < 0.3 and 0.3 < candidate_y < 0.7):
+            # Check if within table bounds
+            if not (tb['x_min'] < candidate_x < tb['x_max'] and
+                    tb['y_min'] < candidate_y < tb['y_max']):
                 continue
 
             # Check if far enough from all other blocks
             is_empty = True
             for (ox, oy) in other_blocks:
                 dist = ((candidate_x - ox)**2 + (candidate_y - oy)**2)**0.5
-                if dist < min_dist:
+                if dist < self.release_min_dist:
                     is_empty = False
                     break
 
@@ -651,7 +673,7 @@ class BlockPrimitives:
 
         if not found:
             # Fallback: place at offset from center
-            place_x, place_y = avg_x + 0.15, avg_y
+            place_x, place_y = avg_x + self.release_min_dist * 2, avg_y
 
         # Place position on table
         # Block is held with grasp at grasp_depth below its top
