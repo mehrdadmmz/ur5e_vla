@@ -180,11 +180,15 @@ class BlockWorldPlanner:
         # Initial pose
         self.init_pose = config['robot'].get('init_pose', None)
 
-    def move_to_init_pose(self):
+    def move_to_init_pose(self, open_gripper: bool = True):
         """Move robot to initial Cartesian pose if configured.
 
         Pose format: [x, y, z, qx, qy, qz, qw] (meters and quaternion)
         Converts to RTDE format: [x, y, z, rx, ry, rz] (axis-angle)
+
+        Args:
+            open_gripper: If True, open gripper after reaching pose.
+                          Set to False when holding a block for re-observation.
         """
         if self.init_pose is None:
             print("No init_pose configured, skipping.")
@@ -207,8 +211,9 @@ class BlockWorldPlanner:
         accel = self.config['robot'].get('acceleration', 0.3)
         self.rtde_c.moveL(rtde_pose, speed, accel)
 
-        # Open gripper to configured position
-        self.primitives._open_gripper()
+        # Only open gripper if requested (not when holding a block)
+        if open_gripper:
+            self.primitives._open_gripper()
         print("Reached init pose.")
 
     def _init_perception(self, config: dict):
@@ -323,8 +328,10 @@ class BlockWorldPlanner:
                     reobserved = True
 
         # Return to init pose after re-observation
-        print("  [Re-observation] Returning to init pose...")
-        self.move_to_init_pose()
+        # Keep gripper state (don't open if holding a block)
+        holding_block = not self.primitives.is_gripper_open()
+        print(f"  [Re-observation] Returning to init pose... (holding={holding_block})")
+        self.move_to_init_pose(open_gripper=not holding_block)
         time.sleep(0.5)
 
         return reobserved
@@ -517,7 +524,7 @@ class BlockWorldPlanner:
                 # Check if robot is holding a block (gripper closed)
                 if not self.primitives.is_gripper_open():
                     print("\n[Pre-place observation] Robot holding block, moving to init for fresh observations...")
-                    self.move_to_init_pose()
+                    self.move_to_init_pose(open_gripper=False)  # Keep gripper closed!
                     time.sleep(1.0)
 
             # Get observations for action execution
