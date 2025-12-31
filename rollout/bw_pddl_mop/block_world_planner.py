@@ -158,6 +158,7 @@ class BlockWorldPlanner:
             rtde_c=self.rtde_c,
             rtde_r=self.rtde_r,
             gripper=self.gripper,
+            aruco_monitor=self.wrist_monitor,  # For pick recalibration
             speed=config['robot'].get('speed', 0.3),
             acceleration=config['robot'].get('acceleration', 0.3),
             approach_height=config.get('motion', {}).get('approach_height', 0.10),
@@ -166,6 +167,8 @@ class BlockWorldPlanner:
             gripper_open_pos=config.get('gripper', {}).get('open_pos', 0),
             action_delay=config.get('motion', {}).get('action_delay', 0.5),
             beside_gap=config.get('motion', {}).get('beside_gap', 0.06),
+            pick_recalibrate_tolerance=config.get('motion', {}).get('pick_recalibrate_tolerance', 0.01),
+            max_recalibrate_attempts=config.get('motion', {}).get('max_recalibrate_attempts', 3),
         )
 
         # Table and robot IDs
