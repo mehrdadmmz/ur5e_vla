@@ -510,6 +510,16 @@ class BlockWorldPlanner:
             print(f"EXECUTING: {action_name}({', '.join(args)})")
             print('='*50)
 
+            # For PLACE actions: move to init pose first to get fresh target observations
+            # This is especially important after a pick action when robot is holding a block
+            place_actions = ['align', 'put-down', 'cover', 'release']
+            if action_name in place_actions:
+                # Check if robot is holding a block (gripper closed)
+                if not self.primitives.is_gripper_open():
+                    print("\n[Pre-place observation] Robot holding block, moving to init for fresh observations...")
+                    self.move_to_init_pose()
+                    time.sleep(1.0)
+
             # Get observations for action execution
             observations, stale_ids, uncertain_ids = self.get_observations(print_status=False)
 

@@ -6,7 +6,7 @@ robot:
   speed: 0.3              # Joint speed (rad/s)
   acceleration: 0.3       # Joint acceleration (rad/s^2)
   # Initial Cartesian pose [x, y, z, qx, qy, qz, qw] in meters and quaternion
-  init_pose: [0.00, 0.55, 0.50, 1.0, 0.0, 0.0, 0.0]
+  init_pose: [0.00, 0.50, 0.65, 1.0, 0.0, 0.0, 0.0]
 
 gripper:
   port: 63352
