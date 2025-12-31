@@ -487,7 +487,9 @@ class BlockWorldPlanner:
         # Get current observations
         observations, _, _ = self.get_observations(print_status=True)
 
-        # Find which block we're holding (the one closest to gripper)
+        # Find which block we're holding
+        # The held block should be close to gripper in 3D space (it's in the gripper)
+        # Table blocks will be much lower in Z
         gripper_pos = self.primitives.get_gripper_position()
         held_block_id = None
         min_dist = float('inf')
@@ -495,26 +497,45 @@ class BlockWorldPlanner:
         for obs in observations:
             if obs[1] in [2, 3]:  # Cube or plank
                 bx, by, bz = obs[2], obs[3], obs[4]
-                dist = np.sqrt((bx - gripper_pos[0])**2 + (by - gripper_pos[1])**2)
+                # Use 3D distance to distinguish held block from table blocks
+                dist = np.sqrt((bx - gripper_pos[0])**2 +
+                              (by - gripper_pos[1])**2 +
+                              (bz - gripper_pos[2])**2)
                 if dist < min_dist:
                     min_dist = dist
                     held_block_id = obs[0]
 
-        if held_block_id is None:
-            print("[Emergency Release] Warning: Cannot identify held block, releasing anyway")
-            # Just open gripper at current position
-            self.primitives._open_gripper()
-            self.move_to_init_pose()
+        # If the closest block is too far (> 15cm), it's probably not the held block
+        # (held block might not be detected - it's in the gripper)
+        if held_block_id is None or min_dist > 0.15:
+            print(f"[Emergency Release] Warning: Cannot identify held block (min_dist={min_dist:.3f})")
+            print("[Emergency Release] Releasing at safe position on table...")
+            # Release at a safe position - use simple put-down at init position offset
+            self._emergency_drop_at_safe_position()
             return True
 
-        print(f"[Emergency Release] Releasing block {held_block_id}")
+        print(f"[Emergency Release] Identified held block {held_block_id} (dist={min_dist:.3f}m)")
 
-        # Use the release action
+        # Create a modified observation with the held block at gripper position
+        # This ensures release() can find the block
+        modified_obs = []
+        for obs in observations:
+            if obs[0] == held_block_id:
+                # Update held block position to gripper position
+                modified = list(obs)
+                modified[2] = gripper_pos[0]
+                modified[3] = gripper_pos[1]
+                modified[4] = gripper_pos[2]
+                modified_obs.append(modified)
+            else:
+                modified_obs.append(obs)
+
+        # Use the release action with modified observations
         success = self.primitives.release(
             block_id=held_block_id,
             table_id=self.table_id,
             robot_id=self.robot_id,
-            observations=observations
+            observations=modified_obs
         )
 
         if success:
@@ -522,11 +543,46 @@ class BlockWorldPlanner:
             self.move_to_init_pose()
             time.sleep(1.0)
         else:
-            print("[Emergency Release] Release failed, opening gripper at current position")
-            self.primitives._open_gripper()
-            self.move_to_init_pose()
+            print("[Emergency Release] Release failed, dropping at safe position")
+            self._emergency_drop_at_safe_position()
 
-        return success
+        return True
+
+    def _emergency_drop_at_safe_position(self):
+        """Drop held block at a safe position on the table."""
+        # Get table bounds from config
+        tb = self.config.get('table_bounds', {'x_min': -0.3, 'x_max': 0.3, 'y_min': 0.3, 'y_max': 0.7})
+        table_z = self.config.get('table_z', 0.0)
+
+        # Calculate safe drop position - center of table
+        drop_x = (tb['x_min'] + tb['x_max']) / 2
+        drop_y = (tb['y_min'] + tb['y_max']) / 2
+        drop_z = table_z + 0.15  # 15cm above table
+
+        print(f"[Emergency Drop] Moving to [{drop_x:.3f}, {drop_y:.3f}, {drop_z:.3f}]")
+
+        # Move above drop position
+        from scipy.spatial.transform import Rotation
+        rot = Rotation.from_rotvec([np.pi, 0, 0]).as_rotvec()
+        pose = [drop_x, drop_y, drop_z] + list(rot)
+
+        speed = self.config['robot'].get('speed', 0.3)
+        accel = self.config['robot'].get('acceleration', 0.3)
+        self.rtde_c.moveL(pose, speed, accel)
+
+        # Lower to just above table
+        pose[2] = table_z + 0.05
+        self.rtde_c.moveL(pose, speed * 0.5, accel)
+
+        # Open gripper
+        self.primitives._open_gripper()
+
+        # Move back up
+        pose[2] = drop_z
+        self.rtde_c.moveL(pose, speed, accel)
+
+        # Return to init
+        self.move_to_init_pose()
 
     def plan(self, goal: List[Tuple]) -> Optional[List[Tuple]]:
         """
@@ -678,6 +734,8 @@ class BlockWorldPlanner:
                 keyboard.clear_continue()
                 print("\n[CONTINUE] Resuming - will replan from current state")
                 use_symbolic_state = False  # Force fresh observation
+                # Don't fall through - restart loop to get fresh observations
+
             print(f"\n{'='*60}")
             print(f"PLANNING CYCLE {attempt + 1}/{max_replans}")
             print('='*60)
