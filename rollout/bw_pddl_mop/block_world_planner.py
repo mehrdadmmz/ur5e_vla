@@ -14,7 +14,33 @@ import sys
 import time
 import yaml
 import numpy as np
+from datetime import datetime
 from typing import List, Tuple, Dict, Optional
+
+
+# =============================================================================
+# Logging to file and console
+# =============================================================================
+
+class TeeLogger:
+    """Duplicates output to both console and log file."""
+
+    def __init__(self, log_path: str):
+        self.terminal = sys.stdout
+        self.log_file = open(log_path, 'w')
+        self.log_path = log_path
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log_file.write(message)
+        self.log_file.flush()  # Ensure immediate write
+
+    def flush(self):
+        self.terminal.flush()
+        self.log_file.flush()
+
+    def close(self):
+        self.log_file.close()
 
 # Robot interfaces
 import rtde_control
@@ -587,9 +613,21 @@ def main():
 
     config['visual'] = args.visual
 
+    # Set up logging to file
+    log_dir = os.path.join(os.path.dirname(__file__), 'logs')
+    os.makedirs(log_dir, exist_ok=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    log_path = os.path.join(log_dir, f'run_{args.goal}_{timestamp}.log')
+    logger = TeeLogger(log_path)
+    sys.stdout = logger
+
     # Get goal
     goal = GOAL_LIBRARY[args.goal]
+
+    print(f"Logging to: {log_path}")
+    print(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"Goal: {args.goal}")
+    print(f"Config: {args.config or 'default'}")
 
     # Run planner
     planner = BlockWorldPlanner(config)
@@ -602,8 +640,15 @@ def main():
             print("\nTask failed.")
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
+    except Exception as e:
+        print(f"\nError: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         planner.close()
+        print(f"\nLog saved to: {log_path}")
+        sys.stdout = logger.terminal  # Restore stdout
+        logger.close()
 
 
 if __name__ == '__main__':
