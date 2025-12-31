@@ -428,7 +428,18 @@ class BlockWorldPlanner:
             print('='*50)
 
             # Get observations for action execution
-            observations, _ = self.get_observations(print_status=False)
+            observations, stale_ids = self.get_observations(print_status=False)
+
+            # Log all object locations before action
+            print_block_positions(observations)
+            if stale_ids:
+                print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
+
+            # Log robot TCP position
+            tcp = self.rtde_r.getActualTCPPose()
+            print(f"Robot TCP: [{tcp[0]:.4f}, {tcp[1]:.4f}, {tcp[2]:.4f}]")
+            gripper_open = self.primitives.is_gripper_open()
+            print(f"Gripper: {'OPEN' if gripper_open else 'CLOSED'}")
 
             # Execute action
             success = self.primitives.execute_action(action_name, args, observations)
@@ -458,8 +469,13 @@ class BlockWorldPlanner:
                 self.move_to_init_pose()
                 time.sleep(1.0)
 
-                # Get fresh state from perception
-                logical_state = self.get_logical_state(print_status=True)
+                # Get fresh observations and state from perception
+                observations, stale_ids = self.get_observations(print_status=True)
+                print_block_positions(observations)
+                if stale_ids:
+                    print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
+
+                logical_state = get_logical_state(observations)
                 use_symbolic_state = False
 
                 print(f"\nUpdated logical state from perception ({len(logical_state)} predicates):")
