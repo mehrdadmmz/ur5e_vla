@@ -156,13 +156,10 @@ class BlockWorldPlanner:
         # Block primitives
         motion_cfg = config.get('motion', {})
         gripper_cfg = config.get('gripper', {})
-        # Use wrist camera for pick recalibration (only works with wrist camera)
-        wrist_monitor = self.aruco_monitor if config['camera'].get('type') == 'wrist' else None
         self.primitives = BlockPrimitives(
             rtde_c=self.rtde_c,
             rtde_r=self.rtde_r,
             gripper=self.gripper,
-            aruco_monitor=wrist_monitor,  # For pick recalibration (wrist camera only)
             speed=config['robot'].get('speed', 0.3),
             acceleration=config['robot'].get('acceleration', 0.3),
             approach_height=motion_cfg.get('approach_height', 0.10),
@@ -171,9 +168,6 @@ class BlockWorldPlanner:
             gripper_z_offset=gripper_cfg.get('z_offset', 0.0),
             action_delay=motion_cfg.get('action_delay', 0.5),
             beside_gap=motion_cfg.get('beside_gap', 0.06),
-            pick_recalibrate_tolerance=motion_cfg.get('pick_recalibrate_tolerance', 0.01),
-            max_recalibrate_attempts=motion_cfg.get('max_recalibrate_attempts', 3),
-            recalibrate_wait=motion_cfg.get('recalibrate_wait', 0.3),
             linear_speed_factor=motion_cfg.get('linear_speed_factor', 0.5),
             gripper_open_pos=gripper_cfg.get('open_pos', 0),
             gripper_close_pos=gripper_cfg.get('close_pos', 255),

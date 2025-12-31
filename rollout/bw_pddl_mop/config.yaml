@@ -63,10 +63,6 @@ motion:
   beside_gap: 0.04        # Gap between blocks when placing beside (meters) - for bridge bases
   place_clearance: 0.005  # Extra clearance when placing (meters)
   linear_speed_factor: 0.5  # Speed multiplier for linear moves (relative to joint speed)
-  # Pick recalibration
-  pick_recalibrate_tolerance: 0.01  # Max position change to accept (meters)
-  max_recalibrate_attempts: 3       # Max recalibration attempts
-  recalibrate_wait: 0.3   # Wait for camera to stabilize during recalibration (seconds)
   # Re-observation
   hover_height: 0.15      # Height above block for re-observation (meters)
   observation_wait: 0.5   # Wait for detection after moving (seconds)

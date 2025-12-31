@@ -22,7 +22,6 @@ class BlockPrimitives:
         rtde_c,
         rtde_r,
         gripper,
-        aruco_monitor=None,  # For recalibration during pick
         speed: float = 0.3,
         acceleration: float = 0.3,
         approach_height: float = 0.10,  # Height above target for approach
@@ -31,9 +30,6 @@ class BlockPrimitives:
         gripper_z_offset: float = 0.0,  # Distance from flange to gripper fingertips
         action_delay: float = 0.5,      # Delay between motion steps
         beside_gap: float = 0.06,       # Gap between blocks when placing beside
-        pick_recalibrate_tolerance: float = 0.01,  # Max position change to accept (meters)
-        max_recalibrate_attempts: int = 3,  # Max recalibration attempts
-        recalibrate_wait: float = 0.3,  # Wait for camera to stabilize (seconds)
         linear_speed_factor: float = 0.5,  # Speed multiplier for linear moves
         gripper_open_pos: int = 0,
         gripper_close_pos: int = 255,
@@ -52,7 +48,6 @@ class BlockPrimitives:
             rtde_c: RTDE control interface
             rtde_r: RTDE receive interface
             gripper: Robotiq gripper instance
-            aruco_monitor: ArUco monitor for recalibration during pick
             speed: Joint speed (rad/s)
             acceleration: Joint acceleration (rad/s^2)
             approach_height: Height above block for approach moves
@@ -61,9 +56,6 @@ class BlockPrimitives:
             gripper_z_offset: Distance from robot flange to gripper fingertips
             action_delay: Delay between motion steps in seconds
             beside_gap: Gap between blocks when placing beside (for bridge bases)
-            pick_recalibrate_tolerance: Position change tolerance for recalibration (meters)
-            max_recalibrate_attempts: Maximum recalibration attempts before proceeding
-            recalibrate_wait: Wait time for camera to stabilize during recalibration
             linear_speed_factor: Speed multiplier for linear moves
             gripper_open_pos: Gripper position for open (0-255)
             gripper_close_pos: Gripper position for close (0-255)
@@ -78,7 +70,6 @@ class BlockPrimitives:
         self.rtde_c = rtde_c
         self.rtde_r = rtde_r
         self.gripper = gripper
-        self.aruco_monitor = aruco_monitor
         self.speed = speed
         self.acceleration = acceleration
         self.approach_height = approach_height
@@ -87,9 +78,6 @@ class BlockPrimitives:
         self.gripper_z_offset = gripper_z_offset
         self.action_delay = action_delay
         self.beside_gap = beside_gap
-        self.pick_recalibrate_tolerance = pick_recalibrate_tolerance
-        self.max_recalibrate_attempts = max_recalibrate_attempts
-        self.recalibrate_wait = recalibrate_wait
         self.linear_speed_factor = linear_speed_factor
         self.gripper_open_pos = gripper_open_pos
         self.gripper_close_pos = gripper_close_pos
@@ -182,95 +170,6 @@ class BlockPrimitives:
         return True
 
     # =========================================================================
-    # Pick with Recalibration Helper
-    # =========================================================================
-
-    def _pick_with_recalibration(self, block_id: int, x: float, y: float, z: float, action_name: str = "Pick") -> bool:
-        """
-        Execute pick sequence with recalibration.
-
-        Moves above block, re-observes, adjusts position if needed, then grasps.
-
-        Args:
-            block_id: ID of block to pick
-            x, y, z: Initial block position (z is top of block)
-            action_name: Name for logging (e.g., "Pick", "Unstack", "Remove-beside")
-
-        Returns:
-            True if successful
-        """
-        # Execute pick sequence
-        self._open_gripper()
-
-        # Recalibration loop
-        current_x, current_y, current_z = x, y, z
-        for attempt in range(self.max_recalibrate_attempts):
-            # Calculate grasp and approach positions
-            grasp_z = current_z - self.grasp_depth + self.gripper_z_offset
-            approach_pos = np.array([current_x, current_y, grasp_z + self.approach_height])
-
-            # Move to approach position
-            print(f"  [Recalibrate] Attempt {attempt + 1}: Moving above block at [{current_x:.3f}, {current_y:.3f}]")
-            if not self._move_to_pose(self._pose_to_list(approach_pos)):
-                return False
-
-            # Re-observe block from above (if aruco_monitor available)
-            if self.aruco_monitor is not None:
-                time.sleep(self.recalibrate_wait)  # Wait for camera to stabilize
-
-                new_pos = self.aruco_monitor.get_marker_position(block_id)
-                if new_pos is not None:
-                    new_x, new_y, new_z = new_pos[0], new_pos[1], new_pos[2]
-
-                    # Calculate position change
-                    dx = abs(new_x - current_x)
-                    dy = abs(new_y - current_y)
-                    dz = abs(new_z - current_z)
-                    dist = np.sqrt(dx**2 + dy**2)
-
-                    print(f"  [Recalibrate] New position: [{new_x:.3f}, {new_y:.3f}, {new_z:.3f}]")
-                    print(f"  [Recalibrate] Position change: dx={dx:.4f}, dy={dy:.4f}, dz={dz:.4f}, dist={dist:.4f}")
-
-                    if dist <= self.pick_recalibrate_tolerance:
-                        print(f"  [Recalibrate] Position stable (dist={dist:.4f} <= tol={self.pick_recalibrate_tolerance})")
-                        # Use the refined position for final approach
-                        current_x, current_y, current_z = new_x, new_y, new_z
-                        break
-                    else:
-                        print(f"  [Recalibrate] Position changed, adjusting...")
-                        current_x, current_y, current_z = new_x, new_y, new_z
-                        # Continue loop to move to new position
-                else:
-                    print(f"  [Recalibrate] Cannot see block {block_id}, using last known position")
-                    break
-            else:
-                # No aruco_monitor, skip recalibration
-                break
-
-        # Final grasp position with recalibrated coordinates
-        grasp_z = current_z - self.grasp_depth + self.gripper_z_offset
-        grasp_pos = np.array([current_x, current_y, grasp_z])
-        approach_pos = np.array([current_x, current_y, grasp_z + self.approach_height])
-
-        # Ensure we're at the final approach position
-        if not self._move_to_pose(self._pose_to_list(approach_pos)):
-            return False
-
-        # Move down to grasp
-        print(f"  [{action_name}] Moving down to grasp at [{current_x:.3f}, {current_y:.3f}, {grasp_z:.3f}]")
-        if not self._move_linear(self._pose_to_list(grasp_pos)):
-            return False
-
-        # Grasp
-        self._close_gripper()
-
-        # Lift
-        if not self._move_linear(self._pose_to_list(approach_pos)):
-            return False
-
-        return True
-
-    # =========================================================================
     # High-Level Actions (matching PDDL actions)
     # =========================================================================
 
@@ -282,7 +181,7 @@ class BlockPrimitives:
         observations: List[List]
     ) -> bool:
         """
-        Pick up a block from the table with recalibration.
+        Pick up a block from the table.
 
         PDDL action: (pick-up ?b1 ?t1 ?r1)
 
@@ -303,10 +202,31 @@ class BlockPrimitives:
         x, y, z = block[2], block[3], block[4]
         print(f"Picking block {block_id} at [{x:.3f}, {y:.3f}, {z:.3f}]")
 
-        success = self._pick_with_recalibration(block_id, x, y, z, "Pick")
-        if success:
-            print(f"Picked block {block_id}")
-        return success
+        # Calculate positions
+        grasp_z = z - self.grasp_depth + self.gripper_z_offset
+        approach_pos = np.array([x, y, grasp_z + self.approach_height])
+        grasp_pos = np.array([x, y, grasp_z])
+
+        # Execute pick sequence
+        self._open_gripper()
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to grasp
+        if not self._move_linear(self._pose_to_list(grasp_pos)):
+            return False
+
+        # Grasp
+        self._close_gripper()
+
+        # Lift
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Picked block {block_id}")
+        return True
 
     def unstack(
         self,
@@ -316,7 +236,7 @@ class BlockPrimitives:
         observations: List[List]
     ) -> bool:
         """
-        Unstack a block from on top of another block with recalibration.
+        Unstack a block from on top of another block.
 
         PDDL action: (unstack ?b1 ?b2 ?r1)
 
@@ -337,10 +257,31 @@ class BlockPrimitives:
         x, y, z = block[2], block[3], block[4]
         print(f"Unstacking block {block_id} from block {under_block_id} at [{x:.3f}, {y:.3f}, {z:.3f}]")
 
-        success = self._pick_with_recalibration(block_id, x, y, z, "Unstack")
-        if success:
-            print(f"Unstacked block {block_id}")
-        return success
+        # Calculate positions
+        grasp_z = z - self.grasp_depth + self.gripper_z_offset
+        approach_pos = np.array([x, y, grasp_z + self.approach_height])
+        grasp_pos = np.array([x, y, grasp_z])
+
+        # Execute pick sequence
+        self._open_gripper()
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to grasp
+        if not self._move_linear(self._pose_to_list(grasp_pos)):
+            return False
+
+        # Grasp
+        self._close_gripper()
+
+        # Lift
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Unstacked block {block_id}")
+        return True
 
     def remove_beside(
         self,
@@ -351,7 +292,7 @@ class BlockPrimitives:
         observations: List[List]
     ) -> bool:
         """
-        Pick up a block that is beside another block with recalibration.
+        Pick up a block that is beside another block.
 
         PDDL action: (remove-beside ?b1 ?b2 ?t1 ?r1)
 
@@ -373,10 +314,31 @@ class BlockPrimitives:
         x, y, z = block[2], block[3], block[4]
         print(f"Removing block {block_id} from beside block {beside_block_id} at [{x:.3f}, {y:.3f}, {z:.3f}]")
 
-        success = self._pick_with_recalibration(block_id, x, y, z, "Remove-beside")
-        if success:
-            print(f"Removed block {block_id} from beside")
-        return success
+        # Calculate positions
+        grasp_z = z - self.grasp_depth + self.gripper_z_offset
+        approach_pos = np.array([x, y, grasp_z + self.approach_height])
+        grasp_pos = np.array([x, y, grasp_z])
+
+        # Execute pick sequence
+        self._open_gripper()
+
+        # Move to approach
+        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+            return False
+
+        # Move down to grasp
+        if not self._move_linear(self._pose_to_list(grasp_pos)):
+            return False
+
+        # Grasp
+        self._close_gripper()
+
+        # Lift
+        if not self._move_linear(self._pose_to_list(approach_pos)):
+            return False
+
+        print(f"Removed block {block_id} from beside")
+        return True
 
     def put_down(
         self,
