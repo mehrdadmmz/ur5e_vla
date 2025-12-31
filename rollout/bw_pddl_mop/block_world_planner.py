@@ -156,11 +156,13 @@ class BlockWorldPlanner:
         # Block primitives
         motion_cfg = config.get('motion', {})
         gripper_cfg = config.get('gripper', {})
+        # Use wrist camera for pick recalibration (only works with wrist camera)
+        wrist_monitor = self.aruco_monitor if config['camera'].get('type') == 'wrist' else None
         self.primitives = BlockPrimitives(
             rtde_c=self.rtde_c,
             rtde_r=self.rtde_r,
             gripper=self.gripper,
-            aruco_monitor=self.wrist_monitor,  # For pick recalibration
+            aruco_monitor=wrist_monitor,  # For pick recalibration (wrist camera only)
             speed=config['robot'].get('speed', 0.3),
             acceleration=config['robot'].get('acceleration', 0.3),
             approach_height=motion_cfg.get('approach_height', 0.10),
@@ -423,7 +425,7 @@ class BlockWorldPlanner:
 
             # Get fresh observations and logical state
             logical_state = self.get_logical_state(print_status=True)
-            observations, _ = self.get_observations(print_status=False)
+            observations, _, _ = self.get_observations(print_status=False)
 
             print(f"\nCurrent logical state ({len(logical_state)} predicates):")
             for pred in sorted(logical_state, key=lambda x: x[0]):
