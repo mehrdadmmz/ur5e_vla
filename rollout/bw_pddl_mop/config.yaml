@@ -52,7 +52,7 @@ motion:
 # Object IDs
 table_id: 9               # ID for table object
 robot_id: 8               # ID for robot/gripper object
-table_z: -0.14              # Z coordinate of table surface
+table_z: -0.13              # Z coordinate of table surface
 
 # Block dimensions by marker ID
 # Format: {marker_id: [width, length, height]}

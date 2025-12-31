@@ -102,9 +102,16 @@ class ArucoMonitor:
         self.latest_poses: Dict[int, np.ndarray] = {}
         self.last_seen: Dict[int, float] = {}  # marker_id -> timestamp when last detected
         self.currently_visible: set = set()     # markers visible in most recent frame
+        self.confidence: Dict[int, Dict] = {}   # marker_id -> {reproj_error, sharpness, confident}
         self.lock = threading.Lock()
         self._running = False
         self._thread = None
+
+        # Confidence thresholds
+        self.max_reproj_error = 2.0      # pixels - reject if higher
+        self.min_sharpness = 30.0        # gradient magnitude - reject if lower
+        self.confident_reproj = 1.0      # pixels - confident if below this
+        self.confident_sharpness = 50.0  # gradient magnitude - confident if above this
 
         # Initialize
         self._init_aruco()
@@ -170,12 +177,47 @@ class ArucoMonitor:
         T[:3, 3] = pos
         return T
 
-    def _detect_markers(self) -> Dict[int, np.ndarray]:
-        """Detect ArUco markers and return poses in camera frame."""
+    def _compute_corner_sharpness(self, gray: np.ndarray, corners: np.ndarray) -> float:
+        """
+        Compute sharpness metric for marker corners using gradient magnitude.
+
+        Higher values indicate sharper/cleaner corner detection.
+        """
+        sharpness_values = []
+        h, w = gray.shape
+
+        for corner in corners:
+            x, y = int(corner[0]), int(corner[1])
+            # Sample a small region around corner (5x5)
+            x1, x2 = max(0, x - 2), min(w, x + 3)
+            y1, y2 = max(0, y - 2), min(h, y + 3)
+
+            if x2 - x1 < 3 or y2 - y1 < 3:
+                continue
+
+            region = gray[y1:y2, x1:x2].astype(np.float32)
+
+            # Compute gradient magnitude using Sobel
+            gx = cv2.Sobel(region, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(region, cv2.CV_32F, 0, 1, ksize=3)
+            magnitude = np.sqrt(gx**2 + gy**2)
+            sharpness_values.append(np.mean(magnitude))
+
+        return np.mean(sharpness_values) if sharpness_values else 0.0
+
+    def _detect_markers(self) -> Tuple[Dict[int, np.ndarray], Dict[int, Dict]]:
+        """
+        Detect ArUco markers and return poses in camera frame with confidence.
+
+        Returns:
+            Tuple of (poses dict, confidence dict)
+            - poses: {marker_id: 4x4 transform}
+            - confidence: {marker_id: {reproj_error, sharpness, confident}}
+        """
         frames = self.pipeline.wait_for_frames()
         color_frame = frames.get_color_frame()
         if not color_frame:
-            return {}
+            return {}, {}
 
         img = np.asanyarray(color_frame.get_data())
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -189,8 +231,10 @@ class ArucoMonitor:
             )
 
         result = {}
+        confidence_result = {}
         rvecs = []
         tvecs = []
+        valid_ids = []
 
         if ids is not None:
             # Define 3D marker corners (marker coordinate system)
@@ -208,14 +252,45 @@ class ArucoMonitor:
                 success, rvec, tvec = cv2.solvePnP(
                     obj_points, corner, self.camera_matrix, self.dist_coeffs
                 )
-                if success:
-                    rvecs.append(rvec)
-                    tvecs.append(tvec)
-                    R, _ = cv2.Rodrigues(rvec)
-                    T = np.eye(4)
-                    T[:3, :3] = R
-                    T[:3, 3] = tvec.flatten()
-                    result[int(marker_id)] = T
+                if not success:
+                    continue
+
+                # Compute reprojection error
+                projected, _ = cv2.projectPoints(
+                    obj_points, rvec, tvec, self.camera_matrix, self.dist_coeffs
+                )
+                projected = projected.reshape(-1, 2)
+                reproj_error = np.mean(np.linalg.norm(corner - projected, axis=1))
+
+                # Compute corner sharpness
+                sharpness = self._compute_corner_sharpness(gray, corner)
+
+                # Check if detection passes minimum quality
+                if reproj_error > self.max_reproj_error:
+                    continue  # Reject poor pose estimate
+                if sharpness < self.min_sharpness:
+                    continue  # Reject blurry detection
+
+                # Determine if detection is confident (high quality)
+                confident = (reproj_error < self.confident_reproj and
+                            sharpness > self.confident_sharpness)
+
+                # Store results
+                rvecs.append(rvec)
+                tvecs.append(tvec)
+                valid_ids.append(marker_id)
+
+                R, _ = cv2.Rodrigues(rvec)
+                T = np.eye(4)
+                T[:3, :3] = R
+                T[:3, 3] = tvec.flatten()
+                result[int(marker_id)] = T
+
+                confidence_result[int(marker_id)] = {
+                    'reproj_error': reproj_error,
+                    'sharpness': sharpness,
+                    'confident': confident
+                }
 
         # Visualization
         if self.visual:
@@ -226,10 +301,17 @@ class ArucoMonitor:
                         img, self.camera_matrix, self.dist_coeffs,
                         rvecs[i], tvecs[i], self.marker_length * 0.5
                     )
+                # Show confidence info
+                for i, mid in enumerate(valid_ids):
+                    conf = confidence_result[int(mid)]
+                    color = (0, 255, 0) if conf['confident'] else (0, 165, 255)  # Green or orange
+                    text = f"ID{mid} E:{conf['reproj_error']:.2f} S:{conf['sharpness']:.0f}"
+                    cv2.putText(img, text, (10, 30 + i * 25),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             cv2.imshow("ArUco Monitor", img)
             cv2.waitKey(1)
 
-        return result
+        return result, confidence_result
 
     def _transform_to_base(self, T_cam_marker: np.ndarray) -> np.ndarray:
         """Transform marker pose from camera frame to base frame."""
@@ -253,7 +335,7 @@ class ArucoMonitor:
         Tracks which markers are currently visible vs using stale data.
         """
         while self._running:
-            poses_cam = self._detect_markers()
+            poses_cam, conf_cam = self._detect_markers()
             current_time = time.time()
 
             with self.lock:
@@ -266,6 +348,9 @@ class ArucoMonitor:
                     T_base = self._transform_to_base(T_cam)
                     self.latest_poses[marker_id] = T_base
                     self.last_seen[marker_id] = current_time
+                    # Store confidence info
+                    if marker_id in conf_cam:
+                        self.confidence[marker_id] = conf_cam[marker_id]
 
             time.sleep(1.0 / self.frequency)
 
@@ -320,6 +405,32 @@ class ArucoMonitor:
             self.latest_poses.pop(marker_id, None)
             self.last_seen.pop(marker_id, None)
             self.currently_visible.discard(marker_id)
+            self.confidence.pop(marker_id, None)
+
+    def get_uncertain_markers(self) -> List[int]:
+        """Get list of marker IDs with uncertain (low confidence) detections.
+
+        Returns markers that are visible but not confident (high reproj error or low sharpness).
+        """
+        with self.lock:
+            uncertain = []
+            for marker_id in self.currently_visible:
+                if marker_id in self.confidence:
+                    if not self.confidence[marker_id].get('confident', True):
+                        uncertain.append(marker_id)
+            return uncertain
+
+    def get_confidence(self, marker_id: int) -> Optional[Dict]:
+        """Get confidence info for a marker."""
+        with self.lock:
+            return self.confidence.get(marker_id, None)
+
+    def get_marker_position(self, marker_id: int) -> Optional[np.ndarray]:
+        """Get position of a specific marker in base frame."""
+        with self.lock:
+            if marker_id in self.latest_poses:
+                return self.latest_poses[marker_id][:3, 3].copy()
+            return None
 
     def get_block_observations(
         self,
@@ -329,7 +440,7 @@ class ArucoMonitor:
         gripper_pos: Optional[np.ndarray] = None,
         gripper_open: bool = True,
         print_status: bool = True,
-    ) -> Tuple[List[List], List[int]]:
+    ) -> Tuple[List[List], List[int], List[int]]:
         """
         Get observations in format expected by predicate_util.
 
@@ -347,13 +458,15 @@ class ArucoMonitor:
             print_status: Print which markers are visible/stale
 
         Returns:
-            Tuple of (observations list, list of marker IDs using stale data)
+            Tuple of (observations list, stale marker IDs, uncertain marker IDs)
         """
         observations = []
         stale_ids = []
+        uncertain_ids = []
 
-        # Get current visibility
+        # Get current visibility and uncertainty
         visible = self.get_visible_markers()
+        uncertain = self.get_uncertain_markers()
 
         # Get block poses
         poses = self.get_poses()
@@ -377,11 +490,21 @@ class ArucoMonitor:
             # Track if using stale data
             if marker_id not in visible:
                 stale_ids.append(marker_id)
+            # Track if detection is uncertain
+            elif marker_id in uncertain:
+                uncertain_ids.append(marker_id)
 
-        if print_status and stale_ids:
-            print(f"  [ArUco] Using stale positions for markers: {stale_ids}")
-        if print_status and visible:
-            print(f"  [ArUco] Currently visible: {sorted(visible)}")
+        if print_status:
+            if visible:
+                print(f"  [ArUco] Currently visible: {sorted(visible)}")
+            if stale_ids:
+                print(f"  [ArUco] Using stale positions for markers: {stale_ids}")
+            if uncertain_ids:
+                # Print confidence details for uncertain markers
+                for mid in uncertain_ids:
+                    conf = self.get_confidence(mid)
+                    if conf:
+                        print(f"  [ArUco] Uncertain marker {mid}: reproj_err={conf['reproj_error']:.2f}px, sharpness={conf['sharpness']:.1f}")
 
         # Add table
         observations.append([
@@ -400,7 +523,7 @@ class ArucoMonitor:
                 1 if gripper_open else 0
             ])
 
-        return observations, stale_ids
+        return observations, stale_ids, uncertain_ids
 
     def __del__(self):
         """Cleanup on destruction."""

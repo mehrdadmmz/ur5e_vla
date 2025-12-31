@@ -244,11 +244,11 @@ class BlockWorldPlanner:
         self.aruco_monitor.start()
         print(f"Perception initialized ({camera_type} camera)")
 
-    def get_observations(self, print_status: bool = True) -> Tuple[List[List], List[int]]:
+    def get_observations(self, print_status: bool = True) -> Tuple[List[List], List[int], List[int]]:
         """Get current world state from perception.
 
         Returns:
-            Tuple of (observations list, list of stale marker IDs)
+            Tuple of (observations list, stale marker IDs, uncertain marker IDs)
         """
         gripper_pos = self.primitives.get_gripper_position()
         gripper_open = self.primitives.is_gripper_open()
@@ -269,8 +269,65 @@ class BlockWorldPlanner:
             print_status: Print ArUco detection status
             debug: Print detailed debug info for above detection
         """
-        observations, stale_ids = self.get_observations(print_status=print_status)
+        observations, stale_ids, uncertain_ids = self.get_observations(print_status=print_status)
         return get_logical_state(observations, debug=debug)
+
+    def reobserve_uncertain_blocks(self, uncertain_ids: List[int], hover_height: float = 0.15) -> bool:
+        """
+        Re-observe uncertain blocks by moving robot above each one.
+
+        For wrist camera, moving directly above a block gives better view.
+
+        Args:
+            uncertain_ids: List of marker IDs with uncertain detection
+            hover_height: Height above block to hover (meters)
+
+        Returns:
+            True if any blocks were re-observed successfully
+        """
+        if not uncertain_ids:
+            return False
+
+        print(f"\n[Re-observation] Moving to observe uncertain blocks: {uncertain_ids}")
+        reobserved = False
+
+        for marker_id in uncertain_ids:
+            # Get current (uncertain) position
+            pos = self.aruco_monitor.get_marker_position(marker_id)
+            if pos is None:
+                print(f"  [Re-observation] Cannot find position for marker {marker_id}")
+                continue
+
+            # Move above the block
+            hover_pos = [pos[0], pos[1], pos[2] + hover_height]
+            print(f"  [Re-observation] Moving above block {marker_id} at [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
+
+            # Create pose with default orientation (gripper pointing down)
+            from scipy.spatial.transform import Rotation
+            rot = Rotation.from_rotvec([np.pi, 0, 0]).as_rotvec()
+            pose = hover_pos + list(rot)
+
+            # Move to hover position
+            speed = self.config['robot'].get('speed', 0.3)
+            accel = self.config['robot'].get('acceleration', 0.3)
+            self.rtde_c.moveL(pose, speed, accel)
+
+            # Wait for detection to update
+            time.sleep(0.5)
+
+            # Check if detection improved
+            conf = self.aruco_monitor.get_confidence(marker_id)
+            if conf:
+                print(f"  [Re-observation] Block {marker_id} after hover: reproj_err={conf['reproj_error']:.2f}px, sharpness={conf['sharpness']:.1f}, confident={conf['confident']}")
+                if conf['confident']:
+                    reobserved = True
+
+        # Return to init pose after re-observation
+        print("  [Re-observation] Returning to init pose...")
+        self.move_to_init_pose()
+        time.sleep(0.5)
+
+        return reobserved
 
     def plan(self, goal: List[Tuple]) -> Optional[List[Tuple]]:
         """
@@ -454,12 +511,21 @@ class BlockWorldPlanner:
             print('='*50)
 
             # Get observations for action execution
-            observations, stale_ids = self.get_observations(print_status=False)
+            observations, stale_ids, uncertain_ids = self.get_observations(print_status=False)
+
+            # Re-observe uncertain blocks before executing action
+            if uncertain_ids:
+                print(f"\nUncertain detections for blocks: {uncertain_ids}")
+                self.reobserve_uncertain_blocks(uncertain_ids)
+                # Get fresh observations after re-observation
+                observations, stale_ids, uncertain_ids = self.get_observations(print_status=False)
 
             # Log all object locations before action
             print_block_positions(observations)
             if stale_ids:
                 print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
+            if uncertain_ids:
+                print(f"WARNING: Still uncertain after re-observation: {uncertain_ids}")
 
             # Log robot TCP position
             tcp = self.rtde_r.getActualTCPPose()
@@ -496,10 +562,19 @@ class BlockWorldPlanner:
                 time.sleep(1.0)
 
                 # Get fresh observations and state from perception
-                observations, stale_ids = self.get_observations(print_status=True)
+                observations, stale_ids, uncertain_ids = self.get_observations(print_status=True)
+
+                # Re-observe uncertain blocks after place action
+                if uncertain_ids:
+                    print(f"\nUncertain detections after place: {uncertain_ids}")
+                    self.reobserve_uncertain_blocks(uncertain_ids)
+                    observations, stale_ids, uncertain_ids = self.get_observations(print_status=True)
+
                 print_block_positions(observations)
                 if stale_ids:
                     print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
+                if uncertain_ids:
+                    print(f"WARNING: Still uncertain after re-observation: {uncertain_ids}")
 
                 logical_state = get_logical_state(observations)
                 use_symbolic_state = False
