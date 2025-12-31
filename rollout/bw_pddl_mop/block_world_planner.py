@@ -14,10 +14,6 @@ import sys
 import time
 import yaml
 import numpy as np
-import threading
-import select
-import termios
-import tty
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 
@@ -51,97 +47,77 @@ class TeeLogger:
 # Keyboard Monitor for Pause/Continue
 # =============================================================================
 
-class KeyboardMonitor:
-    """Non-blocking keyboard monitor for pause/continue control."""
+class PauseController:
+    """
+    Pause/continue controller using file-based signals.
+
+    To pause:  touch /tmp/robot_pause
+    To continue: rm /tmp/robot_pause
+    To quit: touch /tmp/robot_quit
+    """
+
+    PAUSE_FILE = "/tmp/robot_pause"
+    QUIT_FILE = "/tmp/robot_quit"
 
     def __init__(self):
-        self._pause_requested = False
-        self._continue_requested = False
-        self._running = False
-        self._thread = None
-        self._old_settings = None
+        self._running = True
+        # Clean up any existing control files
+        self._cleanup_files()
+
+    def _cleanup_files(self):
+        """Remove control files."""
+        for f in [self.PAUSE_FILE, self.QUIT_FILE]:
+            if os.path.exists(f):
+                os.remove(f)
 
     def start(self):
-        """Start keyboard monitoring thread."""
-        if self._running:
-            return
+        """Start the controller."""
         self._running = True
-        self._pause_requested = False
-        self._continue_requested = False
-        # Save terminal settings
-        try:
-            self._old_settings = termios.tcgetattr(sys.stdin)
-        except:
-            self._old_settings = None
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._thread.start()
-        print("[Keyboard] Press 'p' to pause, 'c' to continue, 'q' to quit")
+        self._cleanup_files()
+        print("\n" + "="*60)
+        print("PAUSE CONTROLS:")
+        print(f"  To PAUSE:    touch {self.PAUSE_FILE}")
+        print(f"  To CONTINUE: rm {self.PAUSE_FILE}")
+        print(f"  To QUIT:     touch {self.QUIT_FILE}")
+        print("="*60 + "\n")
 
     def stop(self):
-        """Stop keyboard monitoring."""
+        """Stop the controller."""
         self._running = False
-        # Restore terminal settings
-        if self._old_settings is not None:
-            try:
-                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
-            except:
-                pass
-        if self._thread is not None:
-            self._thread.join(timeout=1.0)
-
-    def _monitor_loop(self):
-        """Background thread to monitor keyboard input."""
-        while self._running:
-            try:
-                # Check if input is available (non-blocking)
-                if select.select([sys.stdin], [], [], 0.1)[0]:
-                    # Set terminal to raw mode temporarily
-                    if self._old_settings is not None:
-                        tty.setraw(sys.stdin.fileno())
-                    ch = sys.stdin.read(1)
-                    # Restore terminal settings immediately
-                    if self._old_settings is not None:
-                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
-
-                    if ch.lower() == 'p':
-                        self._pause_requested = True
-                        print("\n[Keyboard] PAUSE requested - will pause after current action")
-                    elif ch.lower() == 'c':
-                        self._continue_requested = True
-                        print("\n[Keyboard] CONTINUE requested")
-                    elif ch.lower() == 'q':
-                        print("\n[Keyboard] QUIT requested")
-                        self._pause_requested = True  # Use pause to trigger quit
-                        self._running = False
-            except Exception:
-                pass
-            time.sleep(0.05)
+        self._cleanup_files()
 
     def is_pause_requested(self) -> bool:
         """Check if pause was requested."""
-        return self._pause_requested
+        return os.path.exists(self.PAUSE_FILE)
 
-    def is_continue_requested(self) -> bool:
-        """Check if continue was requested."""
-        return self._continue_requested
+    def is_quit_requested(self) -> bool:
+        """Check if quit was requested."""
+        return os.path.exists(self.QUIT_FILE)
 
     def clear_pause(self):
-        """Clear pause request."""
-        self._pause_requested = False
+        """Clear pause request (for internal use)."""
+        pass  # Pause is cleared when user removes the file
 
     def clear_continue(self):
-        """Clear continue request."""
-        self._continue_requested = False
+        """Clear continue request (for internal use)."""
+        pass
 
     def wait_for_continue(self) -> bool:
-        """Wait until continue is pressed. Returns False if quit requested."""
+        """Wait until continue (pause file removed) or quit. Returns False if quit."""
         print("\n" + "="*60)
-        print("PAUSED - Press 'c' to continue, 'q' to quit")
+        print("PAUSED")
+        print(f"  To CONTINUE: rm {self.PAUSE_FILE}")
+        print(f"  To QUIT:     touch {self.QUIT_FILE}")
         print("="*60)
-        self._continue_requested = False
-        while self._running and not self._continue_requested:
-            time.sleep(0.1)
-        return self._running
+
+        while self._running:
+            if self.is_quit_requested():
+                return False
+            if not self.is_pause_requested():
+                # Pause file removed = continue
+                return True
+            time.sleep(0.2)
+        return False
 
 
 # Robot interfaces
@@ -695,16 +671,16 @@ class BlockWorldPlanner:
         print("BLOCK WORLD PLANNER")
         print("="*60)
 
-        # Start keyboard monitor for pause/continue
-        keyboard = KeyboardMonitor()
-        keyboard.start()
+        # Start pause controller
+        pause_ctrl = PauseController()
+        pause_ctrl.start()
 
         try:
-            return self._run_loop(goal, max_replans, keyboard)
+            return self._run_loop(goal, max_replans, pause_ctrl)
         finally:
-            keyboard.stop()
+            pause_ctrl.stop()
 
-    def _run_loop(self, goal: List[Tuple], max_replans: int, keyboard: KeyboardMonitor) -> bool:
+    def _run_loop(self, goal: List[Tuple], max_replans: int, pause_ctrl: PauseController) -> bool:
         """Internal run loop with pause/continue support."""
         # Move to initial pose first
         self.move_to_init_pose()
@@ -718,20 +694,23 @@ class BlockWorldPlanner:
         use_symbolic_state = False  # True after pick actions
 
         for attempt in range(max_replans):
+            # Check for quit request
+            if pause_ctrl.is_quit_requested():
+                print("\n[QUIT] User requested quit")
+                return False
+
             # Check for pause request at start of each cycle
-            if keyboard.is_pause_requested():
-                keyboard.clear_pause()
+            if pause_ctrl.is_pause_requested():
                 print("\n[PAUSE] Pause requested at start of planning cycle")
 
                 # If holding a block, release it first
                 self.emergency_release()
 
                 # Wait for continue
-                if not keyboard.wait_for_continue():
+                if not pause_ctrl.wait_for_continue():
                     print("\n[QUIT] User requested quit")
                     return False
 
-                keyboard.clear_continue()
                 print("\n[CONTINUE] Resuming - will replan from current state")
                 use_symbolic_state = False  # Force fresh observation
                 # Don't fall through - restart loop to get fresh observations
@@ -843,20 +822,22 @@ class BlockWorldPlanner:
                 time.sleep(1.0)
                 continue
 
-            # Check for pause request after action execution
-            if keyboard.is_pause_requested():
-                keyboard.clear_pause()
+            # Check for pause/quit request after action execution
+            if pause_ctrl.is_quit_requested():
+                print("\n[QUIT] User requested quit")
+                return False
+
+            if pause_ctrl.is_pause_requested():
                 print("\n[PAUSE] Pause requested after action execution")
 
                 # If holding a block, release it first
                 self.emergency_release()
 
                 # Wait for continue
-                if not keyboard.wait_for_continue():
+                if not pause_ctrl.wait_for_continue():
                     print("\n[QUIT] User requested quit")
                     return False
 
-                keyboard.clear_continue()
                 print("\n[CONTINUE] Resuming - will replan from current state")
                 use_symbolic_state = False  # Force fresh observation
                 continue  # Go to next planning cycle
