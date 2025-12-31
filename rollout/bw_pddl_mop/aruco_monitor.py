@@ -294,6 +294,7 @@ class ArucoMonitor:
 
         # Visualization
         if self.visual:
+            # Draw detected markers
             if ids is not None:
                 cv2.aruco.drawDetectedMarkers(img, corners, ids)
                 for i in range(len(rvecs)):
@@ -301,13 +302,63 @@ class ArucoMonitor:
                         img, self.camera_matrix, self.dist_coeffs,
                         rvecs[i], tvecs[i], self.marker_length * 0.5
                     )
-                # Show confidence info
-                for i, mid in enumerate(valid_ids):
-                    conf = confidence_result[int(mid)]
-                    color = (0, 255, 0) if conf['confident'] else (0, 165, 255)  # Green or orange
-                    text = f"ID{mid} E:{conf['reproj_error']:.2f} S:{conf['sharpness']:.0f}"
-                    cv2.putText(img, text, (10, 30 + i * 25),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+
+            # Colors
+            GREEN = (0, 255, 0)
+            YELLOW = (0, 255, 255)
+
+            # Get all known blocks (current + stale)
+            current_detected = set(result.keys())
+            with self.lock:
+                all_known = set(self.latest_poses.keys()) | current_detected
+
+            # Display info for all known blocks
+            row = 0
+            for mid in sorted(all_known):
+                if mid not in self.block_dims:
+                    continue
+
+                # Get position (prefer current detection, fall back to stored)
+                if mid in result:
+                    pos = result[mid][:3, 3]
+                    is_current = True
+                elif mid in self.latest_poses:
+                    with self.lock:
+                        pos = self.latest_poses[mid][:3, 3].copy()
+                    is_current = False
+                else:
+                    continue
+
+                # ID and position - green if current, yellow if stale
+                id_color = GREEN if is_current else YELLOW
+                pos_text = f"ID{mid}: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]"
+                cv2.putText(img, pos_text, (10, 25 + row * 20),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.45, id_color, 1)
+
+                # E and S values - only if we have confidence data
+                if mid in confidence_result:
+                    conf = confidence_result[mid]
+                    e_val = conf['reproj_error']
+                    s_val = conf['sharpness']
+
+                    # E color: green if < confident threshold, yellow otherwise
+                    e_color = GREEN if e_val < self.confident_reproj else YELLOW
+                    # S color: green if > confident threshold, yellow otherwise
+                    s_color = GREEN if s_val > self.confident_sharpness else YELLOW
+
+                    # Draw E and S with individual colors
+                    x_offset = 280
+                    cv2.putText(img, f"E:{e_val:.2f}", (x_offset, 25 + row * 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.45, e_color, 1)
+                    cv2.putText(img, f"S:{s_val:.0f}", (x_offset + 70, 25 + row * 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.45, s_color, 1)
+                elif not is_current:
+                    # Stale block - show "STALE"
+                    cv2.putText(img, "STALE", (280, 25 + row * 20),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.45, YELLOW, 1)
+
+                row += 1
+
             cv2.imshow("ArUco Monitor", img)
             cv2.waitKey(1)
 
