@@ -581,17 +581,18 @@ class BlockPrimitives:
         # Get table Z (surface height)
         table_z = table[4] if table else 0.0
 
-        # Find empty spot: collect positions of all other blocks on table
+        # Find empty spot: collect positions and sizes of all other blocks on table
         other_blocks = []
         for obs in observations:
             if obs[0] != block_id and obs[1] in [2, 3]:  # Other cubes/planks
-                other_blocks.append((obs[2], obs[3]))  # (x, y)
+                # Store position and size: (x, y, width, length)
+                other_blocks.append((obs[2], obs[3], obs[5], obs[6]))
 
         # Calculate center of existing blocks as base
         tb = self.table_bounds
         if other_blocks:
-            avg_x = sum(x for x, y in other_blocks) / len(other_blocks)
-            avg_y = sum(y for x, y in other_blocks) / len(other_blocks)
+            avg_x = sum(x for x, y, w, l in other_blocks) / len(other_blocks)
+            avg_y = sum(y for x, y, w, l in other_blocks) / len(other_blocks)
         else:
             avg_x = (tb['x_min'] + tb['x_max']) / 2
             avg_y = (tb['y_min'] + tb['y_max']) / 2
@@ -604,7 +605,8 @@ class BlockPrimitives:
         # Search offsets: start close, move outward
         offsets = []
         for r in [self.release_min_dist, self.release_min_dist * 1.5,
-                  self.release_min_dist * 2, self.release_min_dist * 2.5]:
+                  self.release_min_dist * 2, self.release_min_dist * 2.5,
+                  self.release_min_dist * 3, self.release_min_dist * 4]:
             for angle_idx in range(8):  # 8 directions
                 angle = angle_idx * (np.pi / 4)  # 45 degree increments
                 dx = r * np.cos(angle)
@@ -615,16 +617,21 @@ class BlockPrimitives:
             candidate_x = avg_x + dx
             candidate_y = avg_y + dy
 
-            # Check if within table bounds
-            if not (tb['x_min'] < candidate_x < tb['x_max'] and
-                    tb['y_min'] < candidate_y < tb['y_max']):
+            # Check if within table bounds (with margin for block size)
+            margin_x = bw / 2 + 0.01
+            margin_y = bl / 2 + 0.01
+            if not (tb['x_min'] + margin_x < candidate_x < tb['x_max'] - margin_x and
+                    tb['y_min'] + margin_y < candidate_y < tb['y_max'] - margin_y):
                 continue
 
-            # Check if far enough from all other blocks
+            # Check if far enough from all other blocks using actual block sizes
             is_empty = True
-            for (ox, oy) in other_blocks:
-                dist = ((candidate_x - ox)**2 + (candidate_y - oy)**2)**0.5
-                if dist < self.release_min_dist:
+            for (ox, oy, ow, ol) in other_blocks:
+                # Minimum distance = half of each block's size + safety margin
+                min_dist_x = (bw + ow) / 2 + 0.02  # 2cm safety margin
+                min_dist_y = (bl + ol) / 2 + 0.02
+                # Use axis-aligned bounding box collision check
+                if abs(candidate_x - ox) < min_dist_x and abs(candidate_y - oy) < min_dist_y:
                     is_empty = False
                     break
 
@@ -634,8 +641,10 @@ class BlockPrimitives:
                 break
 
         if not found:
-            # Fallback: place at offset from center
-            place_x, place_y = avg_x + self.release_min_dist * 2, avg_y
+            # Fallback: place at offset from center (further out)
+            place_x = avg_x + self.release_min_dist * 3
+            place_y = avg_y
+            print(f"  [Release] Warning: No ideal spot found, using fallback position")
 
         # Place position on table
         # Block is held with grasp at grasp_depth below its top

@@ -14,6 +14,10 @@ import sys
 import time
 import yaml
 import numpy as np
+import threading
+import select
+import termios
+import tty
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 
@@ -41,6 +45,104 @@ class TeeLogger:
 
     def close(self):
         self.log_file.close()
+
+
+# =============================================================================
+# Keyboard Monitor for Pause/Continue
+# =============================================================================
+
+class KeyboardMonitor:
+    """Non-blocking keyboard monitor for pause/continue control."""
+
+    def __init__(self):
+        self._pause_requested = False
+        self._continue_requested = False
+        self._running = False
+        self._thread = None
+        self._old_settings = None
+
+    def start(self):
+        """Start keyboard monitoring thread."""
+        if self._running:
+            return
+        self._running = True
+        self._pause_requested = False
+        self._continue_requested = False
+        # Save terminal settings
+        try:
+            self._old_settings = termios.tcgetattr(sys.stdin)
+        except:
+            self._old_settings = None
+        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._thread.start()
+        print("[Keyboard] Press 'p' to pause, 'c' to continue, 'q' to quit")
+
+    def stop(self):
+        """Stop keyboard monitoring."""
+        self._running = False
+        # Restore terminal settings
+        if self._old_settings is not None:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            except:
+                pass
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _monitor_loop(self):
+        """Background thread to monitor keyboard input."""
+        while self._running:
+            try:
+                # Check if input is available (non-blocking)
+                if select.select([sys.stdin], [], [], 0.1)[0]:
+                    # Set terminal to raw mode temporarily
+                    if self._old_settings is not None:
+                        tty.setraw(sys.stdin.fileno())
+                    ch = sys.stdin.read(1)
+                    # Restore terminal settings immediately
+                    if self._old_settings is not None:
+                        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+
+                    if ch.lower() == 'p':
+                        self._pause_requested = True
+                        print("\n[Keyboard] PAUSE requested - will pause after current action")
+                    elif ch.lower() == 'c':
+                        self._continue_requested = True
+                        print("\n[Keyboard] CONTINUE requested")
+                    elif ch.lower() == 'q':
+                        print("\n[Keyboard] QUIT requested")
+                        self._pause_requested = True  # Use pause to trigger quit
+                        self._running = False
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+    def is_pause_requested(self) -> bool:
+        """Check if pause was requested."""
+        return self._pause_requested
+
+    def is_continue_requested(self) -> bool:
+        """Check if continue was requested."""
+        return self._continue_requested
+
+    def clear_pause(self):
+        """Clear pause request."""
+        self._pause_requested = False
+
+    def clear_continue(self):
+        """Clear continue request."""
+        self._continue_requested = False
+
+    def wait_for_continue(self) -> bool:
+        """Wait until continue is pressed. Returns False if quit requested."""
+        print("\n" + "="*60)
+        print("PAUSED - Press 'c' to continue, 'q' to quit")
+        print("="*60)
+        self._continue_requested = False
+        while self._running and not self._continue_requested:
+            time.sleep(0.1)
+        return self._running
+
 
 # Robot interfaces
 import rtde_control
@@ -363,6 +465,69 @@ class BlockWorldPlanner:
 
         return reobserved
 
+    def emergency_release(self) -> bool:
+        """
+        Emergency release: if robot is holding a block, release it to an empty spot on table.
+
+        Used when pausing to ensure the robot can safely return to init pose.
+
+        Returns:
+            True if block was released or gripper was already open
+        """
+        if self.primitives.is_gripper_open():
+            print("[Emergency Release] Gripper already open, nothing to release")
+            return True
+
+        print("\n[Emergency Release] Robot holding a block, releasing to table...")
+
+        # Move to init pose first to get fresh observations
+        self.move_to_init_pose(open_gripper=False)
+        time.sleep(1.0)
+
+        # Get current observations
+        observations, _, _ = self.get_observations(print_status=True)
+
+        # Find which block we're holding (the one closest to gripper)
+        gripper_pos = self.primitives.get_gripper_position()
+        held_block_id = None
+        min_dist = float('inf')
+
+        for obs in observations:
+            if obs[1] in [2, 3]:  # Cube or plank
+                bx, by, bz = obs[2], obs[3], obs[4]
+                dist = np.sqrt((bx - gripper_pos[0])**2 + (by - gripper_pos[1])**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    held_block_id = obs[0]
+
+        if held_block_id is None:
+            print("[Emergency Release] Warning: Cannot identify held block, releasing anyway")
+            # Just open gripper at current position
+            self.primitives._open_gripper()
+            self.move_to_init_pose()
+            return True
+
+        print(f"[Emergency Release] Releasing block {held_block_id}")
+
+        # Use the release action
+        success = self.primitives.release(
+            block_id=held_block_id,
+            table_id=self.table_id,
+            robot_id=self.robot_id,
+            observations=observations
+        )
+
+        if success:
+            print("[Emergency Release] Block released successfully")
+            self.move_to_init_pose()
+            time.sleep(1.0)
+        else:
+            print("[Emergency Release] Release failed, opening gripper at current position")
+            self.primitives._open_gripper()
+            self.move_to_init_pose()
+
+        return success
+
     def plan(self, goal: List[Tuple]) -> Optional[List[Tuple]]:
         """
         Generate a plan to achieve the goal.
@@ -457,6 +622,12 @@ class BlockWorldPlanner:
         - After place actions (align, put-down, cover, release): Re-observe
           from perception, update state, then replan
 
+        Pause/Continue:
+        - Press 'p' to pause after current action
+        - When paused: if holding a block, release it first
+        - Press 'c' to continue (replans from current state)
+        - Press 'q' to quit
+
         Args:
             goal: List of goal predicates
             max_replans: Maximum number of replanning attempts
@@ -468,6 +639,17 @@ class BlockWorldPlanner:
         print("BLOCK WORLD PLANNER")
         print("="*60)
 
+        # Start keyboard monitor for pause/continue
+        keyboard = KeyboardMonitor()
+        keyboard.start()
+
+        try:
+            return self._run_loop(goal, max_replans, keyboard)
+        finally:
+            keyboard.stop()
+
+    def _run_loop(self, goal: List[Tuple], max_replans: int, keyboard: KeyboardMonitor) -> bool:
+        """Internal run loop with pause/continue support."""
         # Move to initial pose first
         self.move_to_init_pose()
 
@@ -480,6 +662,22 @@ class BlockWorldPlanner:
         use_symbolic_state = False  # True after pick actions
 
         for attempt in range(max_replans):
+            # Check for pause request at start of each cycle
+            if keyboard.is_pause_requested():
+                keyboard.clear_pause()
+                print("\n[PAUSE] Pause requested at start of planning cycle")
+
+                # If holding a block, release it first
+                self.emergency_release()
+
+                # Wait for continue
+                if not keyboard.wait_for_continue():
+                    print("\n[QUIT] User requested quit")
+                    return False
+
+                keyboard.clear_continue()
+                print("\n[CONTINUE] Resuming - will replan from current state")
+                use_symbolic_state = False  # Force fresh observation
             print(f"\n{'='*60}")
             print(f"PLANNING CYCLE {attempt + 1}/{max_replans}")
             print('='*60)
@@ -586,6 +784,24 @@ class BlockWorldPlanner:
                 use_symbolic_state = False  # Force re-observation
                 time.sleep(1.0)
                 continue
+
+            # Check for pause request after action execution
+            if keyboard.is_pause_requested():
+                keyboard.clear_pause()
+                print("\n[PAUSE] Pause requested after action execution")
+
+                # If holding a block, release it first
+                self.emergency_release()
+
+                # Wait for continue
+                if not keyboard.wait_for_continue():
+                    print("\n[QUIT] User requested quit")
+                    return False
+
+                keyboard.clear_continue()
+                print("\n[CONTINUE] Resuming - will replan from current state")
+                use_symbolic_state = False  # Force fresh observation
+                continue  # Go to next planning cycle
 
             # Handle state update based on action type
             if action_name in ['pick-up', 'unstack', 'remove-beside']:
