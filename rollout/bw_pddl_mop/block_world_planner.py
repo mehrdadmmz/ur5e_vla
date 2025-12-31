@@ -14,8 +14,18 @@ import sys
 import time
 import yaml
 import numpy as np
+import threading
+import select
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
+
+# Terminal handling for keyboard input
+try:
+    import termios
+    import tty
+    HAS_TERMIOS = True
+except ImportError:
+    HAS_TERMIOS = False
 
 
 # =============================================================================
@@ -44,79 +54,164 @@ class TeeLogger:
 
 
 # =============================================================================
-# Keyboard Monitor for Pause/Continue
+# Pause Controller - Terminal keyboard input
 # =============================================================================
 
 class PauseController:
     """
-    Pause/continue controller using file-based signals.
+    Pause/continue controller using terminal keyboard input.
 
-    To pause:  touch /tmp/robot_pause
-    To continue: rm /tmp/robot_pause
-    To quit: touch /tmp/robot_quit
+    Press 'p' to pause (will pause after current action)
+    Press 'c' to continue
+    Press 'q' to quit
     """
 
-    PAUSE_FILE = "/tmp/robot_pause"
-    QUIT_FILE = "/tmp/robot_quit"
-
     def __init__(self):
-        self._running = True
-        # Clean up any existing control files
-        self._cleanup_files()
-
-    def _cleanup_files(self):
-        """Remove control files."""
-        for f in [self.PAUSE_FILE, self.QUIT_FILE]:
-            if os.path.exists(f):
-                os.remove(f)
+        self._pause_requested = False
+        self._quit_requested = False
+        self._running = False
+        self._thread = None
+        self._lock = threading.Lock()
+        self._old_settings = None
+        self._is_tty = False
 
     def start(self):
-        """Start the controller."""
+        """Start keyboard monitoring."""
         self._running = True
-        self._cleanup_files()
-        print("\n" + "="*60)
-        print("PAUSE CONTROLS:")
-        print(f"  To PAUSE:    touch {self.PAUSE_FILE}")
-        print(f"  To CONTINUE: rm {self.PAUSE_FILE}")
-        print(f"  To QUIT:     touch {self.QUIT_FILE}")
-        print("="*60 + "\n")
+        self._pause_requested = False
+        self._quit_requested = False
+
+        # Check if stdin is a TTY
+        try:
+            self._is_tty = sys.stdin.isatty() and HAS_TERMIOS
+        except:
+            self._is_tty = False
+
+        if self._is_tty:
+            try:
+                # Save current terminal settings
+                self._old_settings = termios.tcgetattr(sys.stdin)
+                # Start keyboard monitoring thread
+                self._thread = threading.Thread(target=self._keyboard_loop, daemon=True)
+                self._thread.start()
+                print("\n" + "="*60)
+                print("KEYBOARD CONTROLS (press in this terminal):")
+                print("  'p' = PAUSE after current action")
+                print("  'c' = CONTINUE after pause")
+                print("  'q' = QUIT")
+                print("="*60 + "\n")
+            except Exception as e:
+                print(f"[Warning] Could not initialize keyboard input: {e}")
+                self._is_tty = False
+
+        if not self._is_tty:
+            print("\n" + "="*60)
+            print("KEYBOARD INPUT NOT AVAILABLE")
+            print("Use file-based controls instead:")
+            print("  To PAUSE:    touch /tmp/robot_pause")
+            print("  To CONTINUE: rm /tmp/robot_pause")
+            print("  To QUIT:     touch /tmp/robot_quit")
+            print("="*60 + "\n")
 
     def stop(self):
-        """Stop the controller."""
+        """Stop keyboard monitoring."""
         self._running = False
-        self._cleanup_files()
+
+        # Restore terminal settings
+        if self._old_settings is not None:
+            try:
+                termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
+            except:
+                pass
+
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _keyboard_loop(self):
+        """Background thread for keyboard monitoring."""
+        fd = sys.stdin.fileno()
+
+        while self._running:
+            try:
+                # Use select to check for input with timeout (non-blocking)
+                readable, _, _ = select.select([sys.stdin], [], [], 0.1)
+
+                if readable:
+                    # Temporarily set terminal to raw mode to read single char
+                    tty.setcbreak(fd)  # Use cbreak instead of raw - less invasive
+                    try:
+                        ch = sys.stdin.read(1)
+                    finally:
+                        # Restore terminal settings immediately
+                        if self._old_settings:
+                            termios.tcsetattr(fd, termios.TCSADRAIN, self._old_settings)
+
+                    with self._lock:
+                        if ch.lower() == 'p':
+                            self._pause_requested = True
+                            sys.stdout.write("\n>>> PAUSE REQUESTED - will pause after current action\n")
+                            sys.stdout.flush()
+                        elif ch.lower() == 'c':
+                            self._pause_requested = False  # Clear pause = continue
+                            sys.stdout.write("\n>>> CONTINUE\n")
+                            sys.stdout.flush()
+                        elif ch.lower() == 'q':
+                            self._quit_requested = True
+                            sys.stdout.write("\n>>> QUIT REQUESTED\n")
+                            sys.stdout.flush()
+
+            except Exception as e:
+                # Silently continue on errors
+                pass
+
+            time.sleep(0.05)
 
     def is_pause_requested(self) -> bool:
         """Check if pause was requested."""
-        return os.path.exists(self.PAUSE_FILE)
+        with self._lock:
+            # Also check file-based pause as fallback
+            return self._pause_requested or os.path.exists("/tmp/robot_pause")
 
     def is_quit_requested(self) -> bool:
         """Check if quit was requested."""
-        return os.path.exists(self.QUIT_FILE)
+        with self._lock:
+            return self._quit_requested or os.path.exists("/tmp/robot_quit")
 
     def clear_pause(self):
-        """Clear pause request (for internal use)."""
-        pass  # Pause is cleared when user removes the file
-
-    def clear_continue(self):
-        """Clear continue request (for internal use)."""
-        pass
+        """Clear pause request."""
+        with self._lock:
+            self._pause_requested = False
+        # Also remove file-based pause
+        if os.path.exists("/tmp/robot_pause"):
+            try:
+                os.remove("/tmp/robot_pause")
+            except:
+                pass
 
     def wait_for_continue(self) -> bool:
-        """Wait until continue (pause file removed) or quit. Returns False if quit."""
+        """Wait until continue or quit. Returns False if quit."""
         print("\n" + "="*60)
         print("PAUSED")
-        print(f"  To CONTINUE: rm {self.PAUSE_FILE}")
-        print(f"  To QUIT:     touch {self.QUIT_FILE}")
+        if self._is_tty:
+            print("  Press 'c' to CONTINUE")
+            print("  Press 'q' to QUIT")
+        else:
+            print("  To CONTINUE: rm /tmp/robot_pause")
+            print("  To QUIT:     touch /tmp/robot_quit")
         print("="*60)
 
         while self._running:
             if self.is_quit_requested():
                 return False
-            if not self.is_pause_requested():
-                # Pause file removed = continue
-                return True
+
+            with self._lock:
+                if not self._pause_requested:
+                    # Also check file
+                    if not os.path.exists("/tmp/robot_pause"):
+                        return True
+
             time.sleep(0.2)
+
         return False
 
 
