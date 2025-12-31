@@ -102,20 +102,29 @@ def get_above(obj1: List, obj2: List, debug: bool = False) -> Optional[Tuple]:
     # Check: Z difference is about one block height, XY overlap
     z_diff = z1 - z2
 
+    # For planks (class 3), use the longer dimension for XY tolerance
+    # This handles planks spanning multiple supports
+    if cls1 == 3:  # Top object is a plank
+        # Plank can span - use max of width/length for tolerance
+        max_dim1 = max(w1, l1)
+        xy_tol_x = max(max_dim1, w2) * t['xy_tolerance']
+        xy_tol_y = max(max_dim1, l2) * t['xy_tolerance']
+    else:
+        xy_tol_x = max(w1, w2) * t['xy_tolerance']
+        xy_tol_y = max(l1, l2) * t['xy_tolerance']
+
     # Debug logging
     if debug and z_diff > 0:
         z_min = h1 * t['z_diff_min']
         z_max = h1 * t['z_diff_max']
-        xy_tol_y = max(l1, l2) * t['xy_tolerance']
-        xy_tol_x = max(w1, w2) * t['xy_tolerance']
         print(f"  [above check] {id1} over {id2}:")
         print(f"    z_diff={z_diff:.4f} (need {z_min:.4f} <= z < {z_max:.4f})")
         print(f"    y_diff={abs(y1-y2):.4f} (need < {xy_tol_y:.4f})")
         print(f"    x_diff={abs(x1-x2):.4f} (need < {xy_tol_x:.4f})")
 
     if (h1 * t['z_diff_min'] <= z_diff < h1 * t['z_diff_max'] and
-        abs(y1 - y2) < max(l1, l2) * t['xy_tolerance'] and
-        abs(x1 - x2) < max(w1, w2) * t['xy_tolerance']):
+        abs(y1 - y2) < xy_tol_y and
+        abs(x1 - x2) < xy_tol_x):
         return ('above', str(id1), str(id2))
 
     return None
