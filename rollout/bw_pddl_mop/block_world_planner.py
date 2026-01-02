@@ -17,7 +17,7 @@ import numpy as np
 import threading
 import select
 from datetime import datetime
-from typing import List, Tuple, Dict, Optional
+from typing import List, Tuple, Optional
 
 # Terminal handling for keyboard input
 try:
@@ -84,7 +84,7 @@ class PauseController:
         # Check if stdin is a TTY
         try:
             self._is_tty = sys.stdin.isatty() and HAS_TERMIOS
-        except:
+        except Exception:
             self._is_tty = False
 
         if self._is_tty:
@@ -121,7 +121,7 @@ class PauseController:
         if self._old_settings is not None:
             try:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, self._old_settings)
-            except:
+            except Exception:
                 pass
 
         if self._thread is not None:
@@ -153,6 +153,12 @@ class PauseController:
                             sys.stdout.flush()
                         elif ch.lower() == 'c':
                             self._pause_requested = False  # Clear pause = continue
+                            # Also remove pause file if it exists
+                            if os.path.exists("/tmp/robot_pause"):
+                                try:
+                                    os.remove("/tmp/robot_pause")
+                                except Exception:
+                                    pass
                             sys.stdout.write("\n>>> CONTINUE\n")
                             sys.stdout.flush()
                         elif ch.lower() == 'q':
@@ -160,7 +166,7 @@ class PauseController:
                             sys.stdout.write("\n>>> QUIT REQUESTED\n")
                             sys.stdout.flush()
 
-            except Exception as e:
+            except Exception:
                 # Silently continue on errors
                 pass
 
@@ -185,7 +191,7 @@ class PauseController:
         if os.path.exists("/tmp/robot_pause"):
             try:
                 os.remove("/tmp/robot_pause")
-            except:
+            except Exception:
                 pass
 
     def wait_for_continue(self) -> bool:
@@ -193,22 +199,36 @@ class PauseController:
         print("\n" + "="*60)
         print("PAUSED")
         if self._is_tty:
-            print("  Press 'c' to CONTINUE")
-            print("  Press 'q' to QUIT")
+            print("  Press 'c' to CONTINUE (or rm /tmp/robot_pause)")
+            print("  Press 'q' to QUIT (or touch /tmp/robot_quit)")
         else:
             print("  To CONTINUE: rm /tmp/robot_pause")
             print("  To QUIT:     touch /tmp/robot_quit")
         print("="*60)
 
+        # Snapshot what caused the pause
+        with self._lock:
+            was_keyboard_pause = self._pause_requested
+        was_file_pause = os.path.exists("/tmp/robot_pause")
+
         while self._running:
             if self.is_quit_requested():
                 return False
 
+            # Check if the pause source(s) have been cleared
+            # - keyboard_cleared: 'c' was pressed (clears _pause_requested)
+            # - file_cleared: file was removed (by 'c' press or manually)
             with self._lock:
-                if not self._pause_requested:
-                    # Also check file
-                    if not os.path.exists("/tmp/robot_pause"):
-                        return True
+                keyboard_cleared = was_keyboard_pause and not self._pause_requested
+            file_cleared = was_file_pause and not os.path.exists("/tmp/robot_pause")
+
+            # Continue if ANY pause source that was active is now cleared
+            # Note: When 'c' is pressed, _keyboard_loop also removes the pause file,
+            # so file_cleared handles the case of pressing 'c' for file-only pause
+            if keyboard_cleared or file_cleared:
+                # Clear all remaining pause state
+                self.clear_pause()
+                return True
 
             time.sleep(0.2)
 
@@ -222,8 +242,8 @@ import rtde_receive
 # Add parent directory for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from aruco_monitor import ArucoMonitor, create_base_camera_monitor, create_wrist_camera_monitor
-from predicate_util import get_logical_state, is_goal_satisfied, get_unsatisfied_goals, set_thresholds, apply_action_effects, print_block_positions
+from aruco_monitor import create_base_camera_monitor, create_wrist_camera_monitor
+from predicate_util import get_logical_state, is_goal_satisfied, get_unsatisfied_goals, set_thresholds, print_block_positions
 from pddl_solver import solve_pddl, plan_to_string
 from block_primitives import BlockPrimitives
 
@@ -247,7 +267,7 @@ GOAL_LIBRARY = {
         ('on-table', '1', '9'), ('on-table', '2', '9'),
         ('beside', '2', '1'),
         ('above', '5', '1'), ('above', '7', '2'),
-        ('above_both', '4', '5', '7'),
+        ('above_both', '6', '5', '7'),
     ],
 
     # Tall bridge: double-height pillars
@@ -256,7 +276,7 @@ GOAL_LIBRARY = {
         ('beside', '2', '1'),
         ('above', '0', '1'), ('above', '3', '2'),
         ('above', '7', '0'), ('above', '5', '3'),
-        ('above_both', '4', '7', '5'),
+        ('above_both', '6', '7', '5'),
     ],
 
     # Simple tower: stack of blocks
@@ -342,6 +362,7 @@ class BlockWorldPlanner:
             action_delay=motion_cfg.get('action_delay', 0.5),
             beside_gap=motion_cfg.get('beside_gap', 0.06),
             linear_speed_factor=motion_cfg.get('linear_speed_factor', 0.5),
+            linear_acceleration=motion_cfg.get('linear_acceleration', 0.1),
             gripper_open_pos=gripper_cfg.get('open_pos', 0),
             gripper_close_pos=gripper_cfg.get('close_pos', 255),
             gripper_speed=gripper_cfg.get('speed', 100),
@@ -352,6 +373,23 @@ class BlockWorldPlanner:
             release_min_dist=motion_cfg.get('release_min_dist', 0.08),
             table_bounds=config.get('table_bounds', None),
         )
+
+        # Set grasp orientations from config
+        if 'grasp_orientations' in config:
+            # Convert keys from strings to ints if needed (YAML may load as strings)
+            grasp_orientations = {}
+            for k, v in config['grasp_orientations'].items():
+                grasp_orientations[int(k)] = v
+            self.primitives.set_grasp_orientations(grasp_orientations)
+            print(f"Loaded grasp orientations for {len(grasp_orientations)} blocks")
+
+        # Set joint limits from config
+        if 'joint_limits' in config.get('robot', {}):
+            joint_limits = {}
+            for k, v in config['robot']['joint_limits'].items():
+                joint_limits[int(k)] = v
+            self.primitives.set_joint_limits(joint_limits)
+            print(f"Loaded joint limits for {len(joint_limits)} joints")
 
         # Table and robot IDs
         self.table_id = config.get('table_id', 9)
@@ -398,7 +436,7 @@ class BlockWorldPlanner:
 
         # Only open gripper if requested (not when holding a block)
         if open_gripper:
-            self.primitives._open_gripper()
+            self.primitives.open_gripper()
         print("Reached init pose.")
 
     def _init_perception(self, config: dict):
@@ -464,12 +502,79 @@ class BlockWorldPlanner:
     def get_logical_state(self, print_status: bool = True, debug: bool = False) -> List[Tuple]:
         """Get current logical state from perception.
 
+        Note: This method discards stale/uncertain info. Use observe_world()
+        for synchronized observations with quality info.
+
         Args:
             print_status: Print ArUco detection status
             debug: Print detailed debug info for above detection
         """
-        observations, stale_ids, uncertain_ids = self.get_observations(print_status=print_status)
+        observations, _, _ = self.get_observations(print_status=print_status)
         return get_logical_state(observations, debug=debug)
+
+    def observe_world(
+        self,
+        extra_viewpoints: bool = False,
+        stability_wait: Optional[float] = None,
+        print_status: bool = True,
+    ) -> Tuple[List[List], List[Tuple], List[int], List[int]]:
+        """
+        Move robot to observation positions and get synchronized state.
+
+        This ensures observations and logical state are always captured together
+        when the robot is stationary, eliminating timing mismatches.
+
+        Args:
+            extra_viewpoints: If True, visit additional positions around init
+                             for better coverage (±10cm offsets)
+            stability_wait: Time to wait for camera stabilization (seconds).
+                           Defaults to config value or 0.5s.
+            print_status: Print ArUco detection status
+
+        Returns:
+            Tuple of (observations, logical_state, stale_ids, uncertain_ids)
+        """
+        motion_cfg = self.config.get('motion', {})
+        if stability_wait is None:
+            stability_wait = motion_cfg.get('stability_wait', 0.5)
+
+        # Determine if we're holding a block (keep gripper closed if so)
+        holding_block = not self.primitives.is_gripper_open()
+
+        # Move to init pose first
+        self.move_to_init_pose(open_gripper=not holding_block)
+
+        # Optionally visit extra viewpoints for better coverage
+        if extra_viewpoints:
+            viewpoints = motion_cfg.get('observe_viewpoints', [
+                [0.10, 0.0, 0.0],   # Right (+10cm)
+                [-0.10, 0.0, 0.0],  # Left (-10cm)
+                [0.0, 0.10, 0.0],   # Forward (+10cm)
+                [0.0, -0.10, 0.0],  # Back (-10cm)
+            ])
+
+            if self.init_pose is not None:
+                base_pos = self.init_pose[:3]  # [x, y, z]
+                for offset in viewpoints:
+                    viewpoint_pos = [
+                        base_pos[0] + offset[0],
+                        base_pos[1] + offset[1],
+                        base_pos[2] + offset[2],
+                    ]
+                    self.primitives.move_to_cartesian(viewpoint_pos, linear=True)
+                    time.sleep(stability_wait * 0.5)  # Brief pause at each viewpoint
+
+                # Return to init pose
+                self.move_to_init_pose(open_gripper=not holding_block)
+
+        # Wait for camera to stabilize
+        time.sleep(stability_wait)
+
+        # Get synchronized observations and logical state
+        observations, stale_ids, uncertain_ids = self.get_observations(print_status=print_status)
+        logical_state = get_logical_state(observations)
+
+        return observations, logical_state, stale_ids, uncertain_ids
 
     def reobserve_uncertain_blocks(self, uncertain_ids: List[int], hover_height: Optional[float] = None) -> bool:
         """
@@ -507,15 +612,8 @@ class BlockWorldPlanner:
             hover_pos = [pos[0], pos[1], pos[2] + hover_height]
             print(f"  [Re-observation] Moving above block {marker_id} at [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
 
-            # Create pose with default orientation (gripper pointing down)
-            from scipy.spatial.transform import Rotation
-            rot = Rotation.from_rotvec([np.pi, 0, 0]).as_rotvec()
-            pose = hover_pos + list(rot)
-
-            # Move to hover position
-            speed = self.config['robot'].get('speed', 0.3)
-            accel = self.config['robot'].get('acceleration', 0.3)
-            self.rtde_c.moveL(pose, speed, accel)
+            # Move to hover position using primitives
+            self.primitives.move_to_cartesian(hover_pos, linear=True)
 
             # Wait for detection to update
             time.sleep(observation_wait)
@@ -633,126 +731,184 @@ class BlockWorldPlanner:
         print(f"[Emergency Drop] Moving to [{drop_x:.3f}, {drop_y:.3f}, {drop_z:.3f}]")
 
         # Move above drop position
-        from scipy.spatial.transform import Rotation
-        rot = Rotation.from_rotvec([np.pi, 0, 0]).as_rotvec()
-        pose = [drop_x, drop_y, drop_z] + list(rot)
-
-        speed = self.config['robot'].get('speed', 0.3)
-        accel = self.config['robot'].get('acceleration', 0.3)
-        self.rtde_c.moveL(pose, speed, accel)
+        self.primitives.move_to_cartesian([drop_x, drop_y, drop_z], linear=True)
 
         # Lower to just above table
-        pose[2] = table_z + 0.05
-        self.rtde_c.moveL(pose, speed * 0.5, accel)
+        self.primitives.move_to_cartesian([drop_x, drop_y, table_z + 0.05], linear=True)
 
         # Open gripper
-        self.primitives._open_gripper()
+        self.primitives.open_gripper()
 
         # Move back up
-        pose[2] = drop_z
-        self.rtde_c.moveL(pose, speed, accel)
+        self.primitives.move_to_cartesian([drop_x, drop_y, drop_z], linear=True)
 
         # Return to init
         self.move_to_init_pose()
 
-    def plan(self, goal: List[Tuple]) -> Optional[List[Tuple]]:
+    def _execute_pick_and_observe(
+        self,
+        action_name: str,
+        args: Tuple,
+        observations: List[List],
+    ) -> Tuple[bool, List[List], List[Tuple]]:
         """
-        Generate a plan to achieve the goal.
+        Execute a pick action and observe world afterwards.
+
+        After the pick motion, checks if the gripper actually grasped something:
+        - If holding: observe world and ensure holding predicate is set
+        - If not holding: pick failed, just observe world for fresh state
 
         Args:
-            goal: List of goal predicates
+            action_name: Name of pick action ('pick-up', 'unstack', 'remove-beside')
+            args: Action arguments as tuple of string IDs
+            observations: Current observations for action execution
 
         Returns:
-            List of actions or None if no plan found
+            Tuple of (success, new_observations, new_logical_state)
         """
-        logical_state = self.get_logical_state()
+        # Get block transforms for grasp orientation
+        block_transforms = self.aruco_monitor.get_block_transforms()
 
-        print("\nCurrent state:")
-        for pred in sorted(logical_state, key=lambda x: x[0]):
-            print(f"  {pred}")
+        # Execute the pick action with transforms
+        success = self.primitives.execute_action(action_name, args, observations, block_transforms)
 
-        print("\nGoal:")
-        for pred in goal:
-            print(f"  {pred}")
+        if not success:
+            print(f"[Pick] Action {action_name} failed during execution")
+            # Observe world to get fresh state after failed attempt
+            new_obs, new_state, _, _ = self.observe_world(extra_viewpoints=True)
+            return False, new_obs, new_state
 
-        # Check if already satisfied
-        if is_goal_satisfied(goal, logical_state):
-            print("\nGoal already satisfied!")
-            return []
+        # Check if we actually grasped something
+        time.sleep(0.3)  # Brief wait for gripper to settle
+        holding = not self.primitives.is_gripper_open()
 
-        print("\nPlanning...")
-        plan = solve_pddl(logical_state, goal, debug=False)
+        if holding:
+            print(f"[Pick] Successfully grasped block (gripper closed)")
 
-        if plan:
-            print("\nPlan found:")
-            print(plan_to_string(plan))
+            # Return to init pose (keeping block) and observe world
+            new_obs, fresh_state, _, _ = self.observe_world(
+                extra_viewpoints=True,
+                print_status=True
+            )
+
+            # Merge: keep (holding, block_id, robot_id) from symbolic state,
+            # but use fresh observations for other predicates
+            # The held block won't be visible (occluded by gripper), so we preserve the holding predicate
+            held_block_id = args[0]
+            holding_pred = ('holding', held_block_id, str(self.robot_id))
+
+            # Start with fresh state, ensure holding predicate is present
+            if holding_pred not in fresh_state:
+                fresh_state = list(fresh_state)
+                fresh_state.append(holding_pred)
+                # Also remove hand_free if present
+                hand_free_pred = ('hand_free', str(self.robot_id))
+                if hand_free_pred in fresh_state:
+                    fresh_state.remove(hand_free_pred)
+
+            return True, new_obs, fresh_state
         else:
-            print("\nNo plan found!")
+            print(f"[Pick] Gripper is open - pick failed (nothing grasped)")
+            # Pick failed - get fresh state
+            new_obs, new_state, _, _ = self.observe_world(extra_viewpoints=True)
+            return False, new_obs, new_state
 
-        return plan
-
-    def execute_plan(self, plan: List[Tuple]) -> bool:
+    def find_free_space(
+        self,
+        observations: List[List],
+        block_width: float,
+        block_length: float,
+        safety_margin: float = 0.03,
+    ) -> Optional[Tuple[float, float]]:
         """
-        Execute a plan step by step.
+        Find a free spot on the table for placing a block.
+
+        Uses spiral search pattern from the center of existing blocks.
 
         Args:
-            plan: List of actions from planner
+            observations: Current world state
+            block_width: Width of block to place
+            block_length: Length of block to place
+            safety_margin: Extra clearance between blocks (meters)
 
         Returns:
-            True if all actions succeeded
+            (x, y) coordinates for placement, or None if no space found
         """
-        if not plan:
-            return True
+        # Get table bounds from config
+        tb = self.config.get('table_bounds', {
+            'x_min': -0.3, 'x_max': 0.3,
+            'y_min': 0.3, 'y_max': 0.7
+        })
 
-        for i, (action_name, args) in enumerate(plan):
-            print(f"\n{'='*50}")
-            print(f"Step {i+1}/{len(plan)}: {action_name}({', '.join(args)})")
-            print('='*50)
+        # Collect positions and sizes of all blocks on table
+        other_blocks = []
+        for obs in observations:
+            if obs[1] in [2, 3]:  # Cubes and planks
+                other_blocks.append({
+                    'x': obs[2], 'y': obs[3],
+                    'width': obs[5], 'length': obs[6]
+                })
 
-            # Get fresh observations and logical state
-            logical_state = self.get_logical_state(print_status=True)
-            observations, _, _ = self.get_observations(print_status=False)
+        # Calculate cluster center
+        if other_blocks:
+            avg_x = sum(b['x'] for b in other_blocks) / len(other_blocks)
+            avg_y = sum(b['y'] for b in other_blocks) / len(other_blocks)
+        else:
+            avg_x = (tb['x_min'] + tb['x_max']) / 2
+            avg_y = (tb['y_min'] + tb['y_max']) / 2
 
-            print(f"\nCurrent logical state ({len(logical_state)} predicates):")
-            for pred in sorted(logical_state, key=lambda x: x[0]):
-                print(f"  {pred}")
+        # Spiral search outward from cluster center
+        # Search at increasing radii, 8 directions each
+        min_radius = 0.08
+        max_radius = 0.32
+        step = 0.04
+        num_directions = 8
 
-            # Execute action
-            success = self.primitives.execute_action(action_name, args, observations)
+        for r in np.arange(min_radius, max_radius + step, step):
+            for dir_idx in range(num_directions):
+                angle = dir_idx * (2 * np.pi / num_directions)
+                dx = r * np.cos(angle)
+                dy = r * np.sin(angle)
+                cx, cy = avg_x + dx, avg_y + dy
 
-            if not success:
-                print(f"Action failed: {action_name}")
-                return False
+                # Check within table bounds (with margin for block size)
+                margin_x = block_width / 2 + 0.01
+                margin_y = block_length / 2 + 0.01
+                if not (tb['x_min'] + margin_x < cx < tb['x_max'] - margin_x and
+                        tb['y_min'] + margin_y < cy < tb['y_max'] - margin_y):
+                    continue
 
-            # Only return to init pose after PLACE actions (when hand is empty)
-            # After pick-up, robot is holding a block - don't open gripper or move away!
-            if action_name != 'pick-up':
-                print("Returning to init pose for perception update...")
-                self.move_to_init_pose()
-                time.sleep(1.0)  # Wait for perception to update
+                # Check AABB collision with all other blocks
+                collision = False
+                for other in other_blocks:
+                    min_dist_x = (block_width + other['width']) / 2 + safety_margin
+                    min_dist_y = (block_length + other['length']) / 2 + safety_margin
+                    if abs(cx - other['x']) < min_dist_x and abs(cy - other['y']) < min_dist_y:
+                        collision = True
+                        break
 
-                # Get updated observations and logical state
-                logical_state = self.get_logical_state(print_status=True)
-                print(f"\nUpdated logical state after action ({len(logical_state)} predicates):")
-                for pred in sorted(logical_state, key=lambda x: x[0]):
-                    print(f"  {pred}")
+                if not collision:
+                    return (cx, cy)
 
-        return True
+        # No free space found
+        print("[find_free_space] Warning: No free space found on table")
+        return None
 
     def run(self, goal: List[Tuple], max_replans: int = 100) -> bool:
         """
         Run the full perception-planning-execution loop.
 
-        Strategy:
-        - After pick-up/unstack: Apply PDDL effects symbolically, then replan
-          (since robot arm blocks wrist camera when holding a block)
-        - After place actions (align, put-down, cover, release): Re-observe
-          from perception, update state, then replan
+        New Architecture:
+        - Uses observe_world() to ensure observations and logical state are
+          always synchronized (captured together when robot is stationary)
+        - After pick actions: checks gripper to verify grasp, then observe_world()
+        - After place actions: observe_world() to get fresh state
+        - No more timing mismatches between planning and execution
 
         Pause/Continue:
         - Press 'p' to pause after current action
         - When paused: if holding a block, release it first
-        - Press 'c' to continue (replans from current state)
+        - Press 'c' to continue (observe_world then replan)
         - Press 'q' to quit
 
         Args:
@@ -777,208 +933,123 @@ class BlockWorldPlanner:
 
     def _run_loop(self, goal: List[Tuple], max_replans: int, pause_ctrl: PauseController) -> bool:
         """Internal run loop with pause/continue support."""
-        # Move to initial pose first
-        self.move_to_init_pose()
-
-        # Wait for camera to stabilize and detect markers
-        print("Waiting for perception to stabilize...")
-        time.sleep(2.0)
-
-        # Track logical state (can be from perception or symbolic updates)
-        logical_state = None
-        use_symbolic_state = False  # True after pick actions
+        # Initial observation
+        observations, logical_state, stale_ids, uncertain_ids = self.observe_world(
+            extra_viewpoints=True, print_status=False
+        )
 
         for attempt in range(max_replans):
-            # Check for quit request
             if pause_ctrl.is_quit_requested():
-                print("\n[QUIT] User requested quit")
+                print("[QUIT]")
                 return False
 
-            # Check for pause request at start of each cycle
             if pause_ctrl.is_pause_requested():
-                print("\n[PAUSE] Pause requested at start of planning cycle")
-
-                # If holding a block, release it first
                 self.emergency_release()
-
-                # Wait for continue
                 if not pause_ctrl.wait_for_continue():
-                    print("\n[QUIT] User requested quit")
                     return False
-
-                print("\n[CONTINUE] Resuming - will replan from current state")
-                use_symbolic_state = False  # Force fresh observation
-                # Don't fall through - restart loop to get fresh observations
-
-            print(f"\n{'='*60}")
-            print(f"PLANNING CYCLE {attempt + 1}/{max_replans}")
-            print('='*60)
-
-            # Get state: either from perception or use symbolically updated state
-            if use_symbolic_state and logical_state is not None:
-                print("[Using symbolically updated state after pick action]")
-                use_symbolic_state = False  # Reset for next cycle
-            else:
-                # Get fresh state from perception
-                # Enable debug on first few cycles to help diagnose issues
-                debug_mode = (attempt < 3) and self.config.get('debug_predicates', False)
-                logical_state = self.get_logical_state(print_status=True, debug=debug_mode)
-
-            num_blocks = sum(1 for p in logical_state if p[0] == 'box')
-
-            if num_blocks == 0:
-                print(f"No blocks detected! Waiting 5s for markers to appear...")
-                time.sleep(5.0)
+                observations, logical_state, stale_ids, uncertain_ids = self.observe_world(
+                    extra_viewpoints=True, print_status=False
+                )
                 continue
 
-            print(f"\nDetected {num_blocks} blocks")
-            print(f"Current logical state ({len(logical_state)} predicates):")
-            for pred in sorted(logical_state, key=lambda x: x[0]):
-                print(f"  {pred}")
+            # Count blocks
+            num_blocks = sum(1 for p in logical_state if p[0] == 'box')
+            if num_blocks == 0:
+                print("No blocks! Waiting 5s...")
+                time.sleep(5.0)
+                observations, logical_state, stale_ids, uncertain_ids = self.observe_world(extra_viewpoints=True)
+                continue
 
-            # Check if goal already satisfied
+            # Compact status line
+            print(f"\n{'='*20} Cycle {attempt+1}/{max_replans} | {num_blocks} blocks {'='*20}")
+
+            # Block positions (compact)
+            print_block_positions(observations)
+
+            # Predicates grouped by type (compact)
+            self._print_predicates_compact(logical_state)
+
+            # Check goal
             if is_goal_satisfied(goal, logical_state):
-                print("\n" + "="*60)
-                print("GOAL ACHIEVED!")
-                print("="*60)
+                print("\n*** GOAL ACHIEVED! ***")
                 return True
 
-            # Show unsatisfied goals
+            # Unsatisfied goals (single line)
             unsatisfied = get_unsatisfied_goals(goal, logical_state)
-            print(f"\nUnsatisfied goals ({len(unsatisfied)}):")
-            for g in unsatisfied:
-                print(f"  {g}")
+            if unsatisfied:
+                print(f"Need: {unsatisfied}")
 
-            # Generate plan for current state
-            print("\nPlanning...")
+            # Plan
             plan = solve_pddl(logical_state, goal, debug=False)
-
             if plan is None:
-                print("Planning failed! Waiting 5s for perception update...")
-                use_symbolic_state = False  # Force re-observation
+                print("Planning failed! Retrying...")
                 time.sleep(5.0)
+                observations, logical_state, stale_ids, uncertain_ids = self.observe_world(extra_viewpoints=True)
                 continue
 
             if len(plan) == 0:
-                print("\n" + "="*60)
-                print("GOAL ACHIEVED!")
-                print("="*60)
+                print("\n*** GOAL ACHIEVED! ***")
                 return True
 
-            print(f"\nPlan ({len(plan)} steps):")
-            print(plan_to_string(plan))
+            # Compact plan display
+            plan_str = " -> ".join([f"{a}({','.join(args)})" for a, args in plan])
+            print(f"Plan: {plan_str}")
 
-            # Execute only the FIRST action of the plan
+            # Execute first action
             action_name, args = plan[0]
-            print(f"\n{'='*50}")
-            print(f"EXECUTING: {action_name}({', '.join(args)})")
-            print('='*50)
+            print(f">> {action_name}({','.join(args)})")
 
-            # For PLACE actions: move to init pose first to get fresh target observations
-            # This is especially important after a pick action when robot is holding a block
+            # Execute
+            pick_actions = ['pick-up', 'unstack', 'remove-beside']
             place_actions = ['align', 'put-down', 'cover', 'release']
-            if action_name in place_actions:
-                # Check if robot is holding a block (gripper closed)
-                if not self.primitives.is_gripper_open():
-                    print("\n[Pre-place observation] Robot holding block, moving to init for fresh observations...")
-                    self.move_to_init_pose(open_gripper=False)  # Keep gripper closed!
-                    time.sleep(1.0)
 
-            # Get observations for action execution
-            observations, stale_ids, uncertain_ids = self.get_observations(print_status=False)
-
-            # Re-observe uncertain blocks before executing action
-            if uncertain_ids:
-                print(f"\nUncertain detections for blocks: {uncertain_ids}")
-                self.reobserve_uncertain_blocks(uncertain_ids)
-                # Get fresh observations after re-observation
-                observations, stale_ids, uncertain_ids = self.get_observations(print_status=False)
-
-            # Log all object locations before action
-            print_block_positions(observations)
-            if stale_ids:
-                print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
-            if uncertain_ids:
-                print(f"WARNING: Still uncertain after re-observation: {uncertain_ids}")
-
-            # Log robot TCP position
-            tcp = self.rtde_r.getActualTCPPose()
-            print(f"Robot TCP: [{tcp[0]:.4f}, {tcp[1]:.4f}, {tcp[2]:.4f}]")
-            gripper_open = self.primitives.is_gripper_open()
-            print(f"Gripper: {'OPEN' if gripper_open else 'CLOSED'}")
-
-            # Execute action
-            success = self.primitives.execute_action(action_name, args, observations)
+            if action_name in pick_actions:
+                success, observations, logical_state = self._execute_pick_and_observe(
+                    action_name, args, observations
+                )
+            elif action_name in place_actions:
+                success = self.primitives.execute_action(action_name, args, observations)
+                if success:
+                    observations, logical_state, stale_ids, uncertain_ids = self.observe_world(
+                        extra_viewpoints=False, print_status=False
+                    )
+            else:
+                print(f"Unknown action: {action_name}")
+                success = False
 
             if not success:
-                print(f"Action failed: {action_name}")
-                print("Will replan on next cycle...")
-                use_symbolic_state = False  # Force re-observation
-                time.sleep(1.0)
+                print(f"FAILED: {action_name}")
+                observations, logical_state, stale_ids, uncertain_ids = self.observe_world(extra_viewpoints=True)
                 continue
 
-            # Check for pause/quit request after action execution
             if pause_ctrl.is_quit_requested():
-                print("\n[QUIT] User requested quit")
                 return False
-
             if pause_ctrl.is_pause_requested():
-                print("\n[PAUSE] Pause requested after action execution")
-
-                # If holding a block, release it first
                 self.emergency_release()
-
-                # Wait for continue
                 if not pause_ctrl.wait_for_continue():
-                    print("\n[QUIT] User requested quit")
                     return False
+                observations, logical_state, stale_ids, uncertain_ids = self.observe_world(
+                    extra_viewpoints=True, print_status=False
+                )
 
-                print("\n[CONTINUE] Resuming - will replan from current state")
-                use_symbolic_state = False  # Force fresh observation
-                continue  # Go to next planning cycle
-
-            # Handle state update based on action type
-            if action_name in ['pick-up', 'unstack', 'remove-beside']:
-                # Apply PDDL effects symbolically (camera blocked by robot arm)
-                print(f"\n[Applying {action_name} effects symbolically]")
-                logical_state = apply_action_effects(logical_state, action_name, args)
-                use_symbolic_state = True
-
-                print(f"Updated logical state after {action_name} ({len(logical_state)} predicates):")
-                for pred in sorted(logical_state, key=lambda x: x[0]):
-                    print(f"  {pred}")
-
-                # Continue immediately to next planning cycle (will use symbolic state)
-            else:
-                # Place actions: return to init pose and re-observe
-                print("\nReturning to init pose for perception update...")
-                self.move_to_init_pose()
-                time.sleep(1.0)
-
-                # Get fresh observations and state from perception
-                observations, stale_ids, uncertain_ids = self.get_observations(print_status=True)
-
-                # Re-observe uncertain blocks after place action
-                if uncertain_ids:
-                    print(f"\nUncertain detections after place: {uncertain_ids}")
-                    self.reobserve_uncertain_blocks(uncertain_ids)
-                    observations, stale_ids, uncertain_ids = self.get_observations(print_status=True)
-
-                print_block_positions(observations)
-                if stale_ids:
-                    print(f"WARNING: Stale markers (not seen recently): {stale_ids}")
-                if uncertain_ids:
-                    print(f"WARNING: Still uncertain after re-observation: {uncertain_ids}")
-
-                logical_state = get_logical_state(observations)
-                use_symbolic_state = False
-
-                print(f"\nUpdated logical state from perception ({len(logical_state)} predicates):")
-                for pred in sorted(logical_state, key=lambda x: x[0]):
-                    print(f"  {pred}")
-
-        print("\nMax replanning attempts exceeded!")
+        print("Max replans exceeded!")
         return False
+
+    def _print_predicates_compact(self, predicates: List[Tuple]):
+        """Print predicates in compact grouped format."""
+        # Group by predicate type
+        groups = {}
+        for p in predicates:
+            ptype = p[0]
+            if ptype not in groups:
+                groups[ptype] = []
+            groups[ptype].append(p[1:])
+
+        # Print each group on one line
+        for ptype in ['on-table', 'above', 'beside', 'holding', 'hand_free', 'top']:
+            if ptype in groups:
+                items = [','.join(args) for args in groups[ptype]]
+                print(f"  {ptype}: {' | '.join(items)}")
 
     def close(self):
         """Clean up resources."""

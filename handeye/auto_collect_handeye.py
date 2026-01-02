@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'collect'))
 
 from handeye_calibration import calibrate_hand_eye
-from collect_handeye import RealsenseCamera, ArucoDetector, get_robot_pose_matrix
+from collect_handeye import RealsenseCamera, ArucoDetector, CharucoDetector, create_detector, get_robot_pose_matrix
 
 
 # =============================================================================
@@ -157,13 +157,8 @@ class AutoHandEyeCollector:
             fps=camera_cfg.get('fps', 30)
         )
 
-        # ArUco detector
-        aruco_cfg = config['aruco']
-        self.detector = ArucoDetector(
-            marker_size=aruco_cfg['marker_size'],
-            marker_id=aruco_cfg.get('marker_id', 0),
-            dict_type=aruco_cfg.get('dict_type', '5x5_50')
-        )
+        # Detector (ArUco or ChArUco based on config)
+        self.detector = create_detector(config)
 
         # Marker position
         self.marker_position = np.array(config.get('marker_position', [0.0, 0.45, 0.0]))

@@ -177,17 +177,26 @@ def solve_pddl(
     parser = create_parser()
     args = parser.parse_args([])
 
-    # Solve
+    # Solve (suppress PDDLStream verbose output)
+    import io
+    import sys
     try:
-        solution = solve(
-            problem,
-            algorithm='adaptive',
-            unit_costs=False,
-            debug=debug,
-            max_failures=5,
-            planner=planner,
-            reorder=False
-        )
+        # Redirect stdout to suppress PDDLStream's verbose output
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            solution = solve(
+                problem,
+                algorithm='adaptive',
+                unit_costs=False,
+                debug=debug,
+                max_failures=5,
+                planner=planner,
+                reorder=False,
+                verbose=False,
+            )
+        finally:
+            sys.stdout = old_stdout
 
         if solution is None or solution.plan is None:
             return None

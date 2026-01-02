@@ -51,11 +51,12 @@ def set_thresholds(thresholds: Dict):
 # Geometric Predicate Detection
 # =============================================================================
 
-def get_beside(obj1: List, obj2: List) -> Optional[List[Tuple]]:
+def get_beside(obj1: List, obj2: List, table_z: float = None) -> Optional[List[Tuple]]:
     """
     Check if obj1 is beside obj2 (horizontally adjacent).
 
     Only applies to cube blocks (class 2).
+    Both blocks must be on the table (not stacked) for beside to apply.
     Returns BOTH ('beside', id1, id2) AND ('beside', id2, id1) since beside is symmetric.
     Only returns predicates when obj1's id < obj2's id to avoid duplicates.
     """
@@ -71,6 +72,15 @@ def get_beside(obj1: List, obj2: List) -> Optional[List[Tuple]]:
 
     # Get thresholds
     t = _thresholds['beside']
+    t_on_table = _thresholds['on_table']
+
+    # Check both blocks are on the table (not stacked on other blocks)
+    if table_z is not None:
+        z_diff1 = z1 - table_z
+        z_diff2 = z2 - table_z
+        # Both blocks must be within on_table threshold of table surface
+        if z_diff1 >= h1 * t_on_table['z_threshold'] or z_diff2 >= h2 * t_on_table['z_threshold']:
+            return None
 
     # Check: Y separation is about one block width (absolute), X aligned, same height
     y_sep = abs(y1 - y2)
@@ -130,22 +140,31 @@ def get_above(obj1: List, obj2: List, debug: bool = False) -> Optional[Tuple]:
     return None
 
 
-def print_block_positions(observations: List[List]):
+def print_block_positions(observations: List[List], compact: bool = True):
     """Print all block positions in robot frame for debugging."""
-    print("\n=== Block Positions (Robot Frame) ===")
-    print(f"{'ID':>3} {'Class':>5} {'X':>8} {'Y':>8} {'Z':>8} {'W':>6} {'L':>6} {'H':>6}")
-    print("-" * 60)
-    for obs in observations:
-        if obs[1] in [0, 2, 3]:  # Table, cube, plank
-            obj_id = obs[0]
-            cls = obs[1]
-            x, y, z = obs[2], obs[3], obs[4]
-            if len(obs) > 7:
-                w, l, h = obs[5], obs[6], obs[7]
-                print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f} {w:>6.3f} {l:>6.3f} {h:>6.3f}")
-            else:
-                print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f}")
-    print("=" * 60 + "\n")
+    if compact:
+        # Single-line format: ID0:[x,y,z] ID1:[x,y,z] ...
+        blocks = []
+        for obs in observations:
+            if obs[1] in [2, 3]:  # cube, plank only
+                blocks.append(f"{obs[0]}:[{obs[2]:.3f},{obs[3]:.3f},{obs[4]:.3f}]")
+        if blocks:
+            print(f"Blocks: {' '.join(blocks)}")
+    else:
+        print("\n=== Block Positions (Robot Frame) ===")
+        print(f"{'ID':>3} {'Class':>5} {'X':>8} {'Y':>8} {'Z':>8} {'W':>6} {'L':>6} {'H':>6}")
+        print("-" * 60)
+        for obs in observations:
+            if obs[1] in [0, 2, 3]:  # Table, cube, plank
+                obj_id = obs[0]
+                cls = obs[1]
+                x, y, z = obs[2], obs[3], obs[4]
+                if len(obs) > 7:
+                    w, l, h = obs[5], obs[6], obs[7]
+                    print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f} {w:>6.3f} {l:>6.3f} {h:>6.3f}")
+                else:
+                    print(f"{obj_id:>3} {cls:>5} {x:>8.4f} {y:>8.4f} {z:>8.4f}")
+        print("=" * 60 + "\n")
 
 
 def get_on_table(obj1: List, obj2: List) -> Optional[Tuple]:
@@ -379,6 +398,13 @@ def get_logical_state(observations: List[List], debug: bool = False) -> List[Tup
     """
     predicates = []
 
+    # Find table_z from table object (class 0)
+    table_z = None
+    for obj in observations:
+        if obj[1] == 0:  # Table class
+            table_z = obj[4]  # z coordinate
+            break
+
     # Debug: print block positions
     if debug:
         print_block_positions(observations)
@@ -401,8 +427,15 @@ def get_logical_state(observations: List[List], debug: bool = False) -> List[Tup
             if result and result not in predicates:
                 predicates.append(result)
 
+            # Check beside (requires table_z to verify both blocks are on table)
+            result = get_beside(obj1, obj2, table_z=table_z)
+            if result:
+                for pred in result:
+                    if pred not in predicates:
+                        predicates.append(pred)
+
             # Check other predicates
-            for get_fn in [get_beside, get_on_table, get_holding]:
+            for get_fn in [get_on_table, get_holding]:
                 result = get_fn(obj1, obj2)
                 if result:
                     # Handle both single predicates and lists of predicates

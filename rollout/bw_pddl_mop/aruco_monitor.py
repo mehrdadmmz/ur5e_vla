@@ -330,9 +330,11 @@ class ArucoMonitor:
                 if mid not in self.block_dims:
                     continue
 
-                # Get position (prefer current detection, fall back to stored)
+                # Get position in BASE FRAME (always transformed)
                 if mid in result:
-                    pos = result[mid][:3, 3]
+                    # Transform current detection to base frame for display
+                    T_base = self._transform_to_base(result[mid])
+                    pos = T_base[:3, 3]
                     is_current = True
                 elif mid in self.latest_poses:
                     with self.lock:
@@ -439,6 +441,22 @@ class ArucoMonitor:
         """Get latest marker poses in base frame."""
         with self.lock:
             return dict(self.latest_poses)
+
+    def get_block_transforms(self) -> Dict[int, np.ndarray]:
+        """Get 4x4 transforms for all detected blocks in base frame.
+
+        Only returns transforms for known block IDs (those in block_dims).
+        Used for computing grasp orientations based on block pose.
+
+        Returns:
+            Dict mapping block marker_id to 4x4 transform matrix
+        """
+        with self.lock:
+            return {
+                mid: T.copy()
+                for mid, T in self.latest_poses.items()
+                if mid in self.block_dims
+            }
 
     def get_visible_markers(self) -> set:
         """Get set of marker IDs currently visible."""

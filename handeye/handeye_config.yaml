@@ -14,13 +14,25 @@ camera:
   resolution: [640, 480]
   fps: 30
 
-aruco:
-  # ArUco marker settings
-  marker_size: 0.032       # Marker size in meters (5cm = 0.05m)
-  marker_id: 2             # ID of marker to detect (-1 for any marker)
-  dict_type: "5x5_50"      # ArUco dictionary type
-  # Options: 4x4_50, 4x4_100, 4x4_250, 5x5_50, 5x5_100, 5x5_250,
-  #          6x6_50, 6x6_100, 6x6_250, original
+calibration_target:
+  type: "charuco"            # "aruco" for single markers, "charuco" for ChArUco board
+
+  # Single ArUco marker settings (used when type: "aruco")
+  aruco:
+    marker_size: 0.032     # Marker size in meters
+    marker_id: 2           # ID of marker to detect (-1 for any marker)
+    dict_type: "5x5_50"    # ArUco dictionary type
+    # Options: 4x4_50, 4x4_100, 4x4_250, 5x5_50, 5x5_100, 5x5_250,
+    #          6x6_50, 6x6_100, 6x6_250, original
+
+  # ChArUco board settings (used when type: "charuco")
+  # ChArUco boards provide higher accuracy through sub-pixel corner detection
+  charuco:
+    squares_x: 4           # Number of chessboard squares in X direction
+    squares_y: 4           # Number of chessboard squares in Y direction
+    square_length: 0.032   # Chessboard square size in meters
+    marker_length: 0.024   # ArUco marker size in meters (must be < square_length)
+    dict_type: "5x5_50"    # ArUco dictionary for embedded markers
 
 # Marker position in robot base frame (where the ArUco marker is placed)
 marker_position: [0.00, 0.45, 0.0]  # [x, y, z] in meters

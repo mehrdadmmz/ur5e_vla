@@ -243,6 +243,267 @@ class ArucoDetector:
         return T_cam_marker, annotated
 
 
+class CharucoDetector:
+    """ChArUco board detector for high-accuracy camera pose estimation."""
+
+    # Predefined ArUco dictionaries (same as ArucoDetector)
+    DICT_MAP = {
+        "4x4_50": aruco.DICT_4X4_50,
+        "4x4_100": aruco.DICT_4X4_100,
+        "4x4_250": aruco.DICT_4X4_250,
+        "5x5_50": aruco.DICT_5X5_50,
+        "5x5_100": aruco.DICT_5X5_100,
+        "5x5_250": aruco.DICT_5X5_250,
+        "6x6_50": aruco.DICT_6X6_50,
+        "6x6_100": aruco.DICT_6X6_100,
+        "6x6_250": aruco.DICT_6X6_250,
+        "original": aruco.DICT_ARUCO_ORIGINAL,
+    }
+
+    def __init__(self, squares_x: int, squares_y: int,
+                 square_length: float, marker_length: float,
+                 dict_type: str = "5x5_50",
+                 marker_ids: list = None):
+        """
+        Initialize ChArUco board detector.
+
+        Args:
+            squares_x: Number of chessboard squares in X direction
+            squares_y: Number of chessboard squares in Y direction
+            square_length: Chessboard square size in meters
+            marker_length: ArUco marker size in meters (must be < square_length)
+            dict_type: ArUco dictionary type for embedded markers
+            marker_ids: Custom list of marker IDs (optional). If None, uses default sequential IDs.
+        """
+        self.squares_x = squares_x
+        self.squares_y = squares_y
+        self.square_length = square_length
+        self.marker_length = marker_length
+
+        if dict_type not in self.DICT_MAP:
+            raise ValueError(f"Unknown dict_type: {dict_type}. Use one of {list(self.DICT_MAP.keys())}")
+
+        self.aruco_dict = aruco.getPredefinedDictionary(self.DICT_MAP[dict_type])
+
+        # Handle both old and new OpenCV ArUco API
+        # OpenCV 4.7+ uses CharucoDetector class, older versions use module functions
+        self._use_charuco_detector = hasattr(aruco, 'CharucoDetector')
+
+        # Convert marker_ids to numpy array if provided
+        ids_array = None
+        if marker_ids is not None:
+            ids_array = np.array(marker_ids, dtype=np.int32)
+
+        if hasattr(aruco, 'CharucoBoard'):
+            # OpenCV 4.7+ style board creation
+            if ids_array is not None:
+                self.board = aruco.CharucoBoard(
+                    (squares_x, squares_y),
+                    square_length,
+                    marker_length,
+                    self.aruco_dict,
+                    ids_array
+                )
+            else:
+                self.board = aruco.CharucoBoard(
+                    (squares_x, squares_y),
+                    square_length,
+                    marker_length,
+                    self.aruco_dict
+                )
+        else:
+            # OpenCV < 4.7
+            self.board = aruco.CharucoBoard_create(
+                squares_x, squares_y,
+                square_length, marker_length,
+                self.aruco_dict
+            )
+            if ids_array is not None:
+                self.board.ids = ids_array
+
+        if self._use_charuco_detector:
+            # OpenCV 4.7+ uses CharucoDetector with detectBoard()
+            self.parameters = aruco.DetectorParameters()
+            self.charuco_detector = aruco.CharucoDetector(self.board)
+        else:
+            # Older OpenCV uses module-level functions
+            self.parameters = aruco.DetectorParameters_create()
+            self.charuco_detector = None
+
+        ids_str = str(marker_ids) if marker_ids else "default"
+        print(f"ChArUco detector initialized: {squares_x}x{squares_y} board, "
+              f"square={square_length*1000:.1f}mm, marker={marker_length*1000:.1f}mm, "
+              f"dict={dict_type}, ids={ids_str}")
+
+    def detect(self, image: np.ndarray, camera_matrix: np.ndarray,
+               dist_coeffs: np.ndarray) -> Tuple[Optional[np.ndarray], np.ndarray]:
+        """
+        Detect ChArUco board and estimate pose.
+
+        Args:
+            image: RGB image
+            camera_matrix: 3x3 camera intrinsic matrix
+            dist_coeffs: Distortion coefficients
+
+        Returns:
+            Tuple of (T_cam_board as 4x4 matrix or None, annotated image)
+        """
+        # Convert to grayscale
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+
+        # Create annotated image
+        annotated = image.copy()
+
+        if self._use_charuco_detector:
+            # OpenCV 4.7+ API: use CharucoDetector.detectBoard()
+            charuco_corners, charuco_ids, corners, ids = self.charuco_detector.detectBoard(gray)
+
+            # Debug: show what was detected
+            n_markers = len(ids) if ids is not None else 0
+            n_corners = len(charuco_corners) if charuco_corners is not None else 0
+            marker_ids_str = str(ids.flatten().tolist()) if ids is not None else "none"
+            cv2.putText(annotated, f"Markers: {n_markers} {marker_ids_str}", (10, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+            cv2.putText(annotated, f"Corners: {n_corners}", (10, 130),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+
+            if charuco_corners is None or len(charuco_corners) < 4:
+                if corners is not None and len(corners) > 0:
+                    aruco.drawDetectedMarkers(annotated, corners, ids)
+                cv2.putText(annotated, f"Not enough corners ({len(charuco_corners) if charuco_corners is not None else 0})",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                return None, annotated
+
+            # Estimate pose using solvePnP with board's object points
+            obj_points, img_points = self.board.matchImagePoints(charuco_corners, charuco_ids)
+
+            if obj_points is None or len(obj_points) < 4:
+                cv2.putText(annotated, "Not enough points for pose", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                return None, annotated
+
+            success, rvec, tvec = cv2.solvePnP(obj_points, img_points, camera_matrix, dist_coeffs)
+
+        else:
+            # Older OpenCV API: use module-level functions
+            corners, ids, rejected = aruco.detectMarkers(
+                gray, self.aruco_dict, parameters=self.parameters
+            )
+
+            if ids is None or len(ids) == 0:
+                cv2.putText(annotated, "No ArUco markers detected", (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                return None, annotated
+
+            ret, charuco_corners, charuco_ids = aruco.interpolateCornersCharuco(
+                corners, ids, gray, self.board
+            )
+
+            if charuco_corners is None or len(charuco_corners) < 4:
+                cv2.putText(annotated, f"Not enough corners ({len(charuco_corners) if charuco_corners is not None else 0})",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                aruco.drawDetectedMarkers(annotated, corners, ids)
+                return None, annotated
+
+            success, rvec, tvec = aruco.estimatePoseCharucoBoard(
+                charuco_corners, charuco_ids, self.board,
+                camera_matrix, dist_coeffs
+            )
+
+        if not success:
+            cv2.putText(annotated, "Pose estimation failed", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            if corners is not None:
+                aruco.drawDetectedMarkers(annotated, corners, ids)
+            return None, annotated
+
+        rvec = rvec.flatten()
+        tvec = tvec.flatten()
+
+        # Build 4x4 transformation matrix
+        R, _ = cv2.Rodrigues(rvec)
+        T_cam_board = np.eye(4)
+        T_cam_board[:3, :3] = R
+        T_cam_board[:3, 3] = tvec
+
+        # Draw detection
+        if corners is not None:
+            aruco.drawDetectedMarkers(annotated, corners, ids)
+        aruco.drawDetectedCornersCharuco(annotated, charuco_corners, charuco_ids)
+        cv2.drawFrameAxes(annotated, camera_matrix, dist_coeffs, rvec, tvec,
+                          self.square_length * 2)
+
+        # Add text info
+        cv2.putText(annotated, f"ChArUco: {len(charuco_corners)} corners", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+        cv2.putText(annotated, f"Pos: [{tvec[0]:.3f}, {tvec[1]:.3f}, {tvec[2]:.3f}]", (10, 70),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        return T_cam_board, annotated
+
+    def generate_board_image(self, pixels_per_square: int = 100) -> np.ndarray:
+        """
+        Generate a printable ChArUco board image.
+
+        Args:
+            pixels_per_square: Resolution in pixels per chessboard square
+
+        Returns:
+            Board image as numpy array
+        """
+        img_size = (self.squares_x * pixels_per_square,
+                    self.squares_y * pixels_per_square)
+
+        if hasattr(self.board, 'generateImage'):
+            board_img = self.board.generateImage(img_size)
+        else:
+            board_img = self.board.draw(img_size)
+
+        return board_img
+
+
+def create_detector(config: dict):
+    """
+    Factory function to create the appropriate detector based on config.
+
+    Args:
+        config: Configuration dictionary with 'calibration_target' section
+
+    Returns:
+        ArucoDetector or CharucoDetector instance
+    """
+    # Support both old config format (aruco: section) and new (calibration_target:)
+    if 'calibration_target' in config:
+        target_cfg = config['calibration_target']
+        target_type = target_cfg.get('type', 'aruco')
+
+        if target_type == 'charuco':
+            charuco_cfg = target_cfg['charuco']
+            return CharucoDetector(
+                squares_x=charuco_cfg['squares_x'],
+                squares_y=charuco_cfg['squares_y'],
+                square_length=charuco_cfg['square_length'],
+                marker_length=charuco_cfg['marker_length'],
+                dict_type=charuco_cfg.get('dict_type', '5x5_50'),
+                marker_ids=charuco_cfg.get('marker_ids', None)
+            )
+        else:
+            aruco_cfg = target_cfg['aruco']
+            return ArucoDetector(
+                marker_size=aruco_cfg['marker_size'],
+                marker_id=aruco_cfg.get('marker_id', 0),
+                dict_type=aruco_cfg.get('dict_type', '5x5_50')
+            )
+    else:
+        # Backward compatibility: use old 'aruco:' section directly
+        aruco_cfg = config['aruco']
+        return ArucoDetector(
+            marker_size=aruco_cfg['marker_size'],
+            marker_id=aruco_cfg.get('marker_id', 0),
+            dict_type=aruco_cfg.get('dict_type', '5x5_50')
+        )
+
+
 # =============================================================================
 # Robot Interface
 # =============================================================================
@@ -316,13 +577,8 @@ class HandEyeDataCollector:
             fps=camera_cfg.get('fps', 30)
         )
 
-        # Initialize ArUco detector
-        aruco_cfg = config['aruco']
-        self.detector = ArucoDetector(
-            marker_size=aruco_cfg['marker_size'],
-            marker_id=aruco_cfg.get('marker_id', 0),
-            dict_type=aruco_cfg.get('dict_type', '4x4_50')
-        )
+        # Initialize detector (ArUco or ChArUco based on config)
+        self.detector = create_detector(config)
 
         # Data storage
         self.robot_poses: List[np.ndarray] = []

@@ -6,7 +6,17 @@ robot:
   speed: 0.3              # Joint speed (rad/s)
   acceleration: 0.3       # Joint acceleration (rad/s^2)
   # Initial Cartesian pose [x, y, z, qx, qy, qz, qw] in meters and quaternion
-  init_pose: [0.00, 0.50, 0.65, 1.0, 0.0, 0.0, 0.0]
+  init_pose: [0.00, 0.50, 0.60, 1.0, 0.0, 0.0, 0.0]
+
+  # Joint limits [min, max] in radians for each joint (0-5)
+  # Motions that would exceed these limits are rejected
+  joint_limits:
+    0: [-3.1416, 3.1416]   # Base
+    1: [-3.1416, 3.1416]   # Shoulder
+    2: [-3.1416, 3.1416]   # Elbow
+    3: [-3.1416, 3.1416]   # Wrist 1
+    4: [-3.1416, 3.1416]   # Wrist 2
+    5: [-1.5708, 4.7124]   # Wrist 3: -90° to 270°
 
 gripper:
   port: 63352
@@ -29,7 +39,7 @@ gripper:
 # Use 'wrist' for wrist-mounted camera (requires hand-eye calibration)
 camera:
   type: "wrist"            # "base" or "wrist"
-  serial: "243322072780"  # Base camera serial
+  serial: "243322072780"  # camera serial
 
   # For base camera: fixed transform from camera to robot base frame
   # Update this with your actual calibration!
@@ -40,12 +50,12 @@ camera:
   #   - [0.0, 0.0, 0.0, 1.0]
 
   # For wrist camera: path to hand-eye calibration file
-  # calibration_file: "../../handeye/handeye_data/calibration_20251229_154016.npy"
-  calibration_file: "../../handeye/handeye_data/calibration_no_rotation.npy"
+  calibration_file: "../../handeye/handeye_data/calibration_20260102_142634.npy"
+  # calibration_file: "../../handeye/handeye_data/calibration_no_rotation.npy"
 
   # Calibration correction offset [x, y, z] in robot base frame (meters)
   # Use this to fine-tune if detected positions are slightly off
-  offset: [-0.013, 0.013, 0.0]
+  offset: [-0.00, 0.00, 0.0]
 
 aruco:
   marker_size: 0.032      # Marker size in meters (32mm)
@@ -57,17 +67,27 @@ aruco:
   stale_age: 2.0          # seconds - marker data considered stale after this
 
 motion:
-  approach_height: 0.10   # Height above block for approach (meters)
-  grasp_depth: 0.02       # How deep to grasp below block top (meters)
+  approach_height: 0.06   # Height above block for approach (meters)
+  grasp_depth: 0.01       # How deep to grasp below block top (meters)
   action_delay: 0.5       # Delay between motion steps (seconds)
-  beside_gap: 0.04        # Gap between blocks when placing beside (meters) - for bridge bases
-  place_clearance: 0.005  # Extra clearance when placing (meters)
+  beside_gap: 0.025        # Gap between blocks when placing beside (meters) - for bridge bases
+  place_clearance: 0.00  # Extra clearance when placing (meters)
   linear_speed_factor: 0.5  # Speed multiplier for linear moves (relative to joint speed)
+  linear_acceleration: 0.1  # Acceleration for linear moves (m/s^2) - lower = slower/smoother
   # Re-observation
   hover_height: 0.15      # Height above block for re-observation (meters)
   observation_wait: 0.5   # Wait for detection after moving (seconds)
   # Release action - finding empty spot on table
-  release_min_dist: 0.08  # Minimum distance from other blocks (meters)
+  release_min_dist: 0.15  # Minimum distance from other blocks (meters) - increased for safety
+
+  # observe_world settings - ensures synchronized observations and logical state
+  stability_wait: 1.0     # Wait for camera stabilization after moving (seconds)
+  # Extra viewpoints for better coverage (offsets from init_pose in meters [dx, dy, dz])
+  observe_viewpoints:
+    - [0.00, 0.00, 0.0]
+    # - [0.10, 0.10, 0.0]    # Right 
+    # - [0.0, 0.20, 0.0]    # Forward 
+    # - [-0.10, 0.10, 0.0]   # Left 
 
 # Table workspace bounds for release action
 table_bounds:
@@ -79,7 +99,7 @@ table_bounds:
 # Object IDs
 table_id: 9               # ID for table object
 robot_id: 8               # ID for robot/gripper object
-table_z: -0.13              # Z coordinate of table surface
+table_z: -0.15              # Z coordinate of table surface
 
 # Block dimensions by marker ID
 # Format: {marker_id: [width, length, height]}
@@ -104,6 +124,19 @@ block_class:
   6: 3
   7: 2
 
+# Grasp orientations per block ID (list of valid Z-rotations in radians, relative to block frame)
+# 0 = gripper aligned with block X-axis, π/2 = aligned with Y-axis
+# Multiple angles allow symmetric grasping (e.g., grab from either side)
+grasp_orientations:
+  0: [0.0, 1.5708, 3.1416, -1.5708]  # Cube - 4 symmetric sides
+  1: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  2: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  3: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  4: [1.5708, -1.5708]                    # Plank - grasp along short side
+  5: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  6: [1.5708, -1.5708]                    # Plank - grasp along short side
+  7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+
 visual: true             # Show ArUco detection window
 debug_predicates: true   # Print debug info for predicate detection (positions, thresholds)
 
@@ -111,16 +144,16 @@ debug_predicates: true   # Print debug info for predicate detection (positions, 
 predicates:
   # 'beside' detection - blocks are horizontally adjacent
   beside:
-    y_sep_min: 0.5        # Min Y separation as fraction of combined length
-    y_sep_max: 1.0       # Max Y separation as fraction of combined length
-    x_tolerance: 0.8      # X alignment tolerance (multiplier of min width)
-    z_tolerance: 1.0      # Z alignment tolerance (multiplier of min height)
+    y_sep_min: 0.0        # Min Y separation as fraction of combined length
+    y_sep_max: 1.5       # Max Y separation as fraction of combined length
+    x_tolerance: 0.5    # X alignment tolerance (multiplier of min width)
+    z_tolerance: 2.0      # Z alignment tolerance (multiplier of min height) - increased for detection variance
 
   # 'above' detection - block is stacked on another
   above:
     z_diff_min: 0.5      # Min Z difference as fraction of top block height
     z_diff_max: 1.5       # Max Z difference as fraction of top block height
-    xy_tolerance: 0.7     # XY overlap tolerance (multiplier of max dimension)
+    xy_tolerance: 0.3     # XY overlap tolerance (multiplier of max dimension)
 
   # 'on_table' detection - block is on table surface
   on_table:
