@@ -224,6 +224,7 @@
 
         (not (beside ?b1 ?b2)) (not-beside ?b1 ?b2)
         (not (beside ?b2 ?b1)) (not-beside ?b2 ?b1)
+        (nothing_beside ?b1)
         (nothing_beside ?b2)
       )
   )
