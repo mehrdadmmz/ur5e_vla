@@ -246,11 +246,11 @@ class PlannerAdapter:
         """
         from perception import get_logical_state
 
-        # Move to observation pose if configured
-        if extra_viewpoints and hasattr(self._robot, 'init_pose') and self._robot.init_pose:
+        # ALWAYS move to init pose for observations (robot needs to be at safe height)
+        # Note: Previously this was conditional on extra_viewpoints, but that caused
+        # the robot to stay low after place actions, leading to poor observations
+        if hasattr(self._robot, 'init_pose') and self._robot.init_pose:
             self._robot.move_to_init_pose()
-            if self._gripper.is_connected():
-                self._gripper.open()
             time.sleep(self.config.get('motion', {}).get('stability_wait', 1.0))
 
         # Get observations from perception
@@ -447,8 +447,15 @@ class PlannerAdapter:
                 # ===== CHECK FOR PAUSE =====
                 if self.command_bridge.is_pause_requested():
                     self.state_manager.update_state(execution_status=ExecutionStatus.PAUSED)
-                    self.emergency_release()
 
+                    # Save holding predicate before pause (held block is occluded by gripper)
+                    holding_pred = None
+                    for pred in logical_state:
+                        if pred[0] == 'holding':
+                            holding_pred = pred
+                            break
+
+                    # Don't release - just wait for continue
                     if not self.command_bridge.wait_for_continue():
                         break
 
@@ -456,6 +463,19 @@ class PlannerAdapter:
                     observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
                         extra_viewpoints=True, print_status=False
                     )
+
+                    # Restore holding predicate if gripper is still closed
+                    if holding_pred and not gripper_open:
+                        logical_state = list(logical_state)
+                        if holding_pred not in logical_state:
+                            logical_state.append(holding_pred)
+                            print(f"[Pause/Resume] Restored holding predicate: {holding_pred}")
+                        # Remove hand_free if present
+                        hand_free = ('hand_free', str(self.robot_id))
+                        if hand_free in logical_state:
+                            logical_state.remove(hand_free)
+                        logical_state = tuple(logical_state)
+
                     self.command_bridge.broadcast_state(
                         observations, logical_state, stale_ids, uncertain_ids,
                         gripper_pos, gripper_open
@@ -468,6 +488,13 @@ class PlannerAdapter:
                     if result:
                         new_goal_name, _ = result
                         if new_goal_name in GOAL_LIBRARY:
+                            # Save holding predicate before re-observing (held block is occluded)
+                            holding_pred = None
+                            for pred in logical_state:
+                                if pred[0] == 'holding':
+                                    holding_pred = pred
+                                    break
+
                             goal = get_goal_predicates(new_goal_name)
                             self._current_goal_name = new_goal_name
                             self._current_goal = goal
@@ -476,6 +503,18 @@ class PlannerAdapter:
                             observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
                                 extra_viewpoints=True, print_status=False
                             )
+
+                            # Restore holding predicate if gripper is still closed
+                            if holding_pred and not gripper_open:
+                                logical_state = list(logical_state)
+                                if holding_pred not in logical_state:
+                                    logical_state.append(holding_pred)
+                                    print(f"[Goal Change] Restored holding predicate: {holding_pred}")
+                                hand_free = ('hand_free', str(self.robot_id))
+                                if hand_free in logical_state:
+                                    logical_state.remove(hand_free)
+                                logical_state = tuple(logical_state)
+
                             self.command_bridge.broadcast_state(
                                 observations, logical_state, stale_ids, uncertain_ids,
                                 gripper_pos, gripper_open
@@ -543,13 +582,13 @@ class PlannerAdapter:
 
                 success = False
                 if action_name in pick_actions:
-                    success = self._execute_pick_action(action_name, args, observations)
-                    if success:
-                        # Re-observe after pick
+                    # Use _execute_pick_and_observe which explicitly adds holding predicate
+                    # (held block is occluded by gripper, so observation alone won't detect it)
+                    self.state_manager.update_state(execution_status=ExecutionStatus.EXECUTING)
+                    result = self._execute_pick_and_observe(action_name, args, observations)
+                    success, observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = result
+                    if success and logical_state is not None:
                         self.state_manager.update_state(execution_status=ExecutionStatus.OBSERVING)
-                        observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
-                            extra_viewpoints=False, print_status=False
-                        )
                 elif action_name in place_actions:
                     block_transforms = self._perception.get_block_transforms()
                     success = self._primitives.execute_action(
@@ -589,8 +628,15 @@ class PlannerAdapter:
 
                 if self.command_bridge.is_pause_requested():
                     self.state_manager.update_state(execution_status=ExecutionStatus.PAUSED)
-                    self.emergency_release()
 
+                    # Save holding predicate before pause (held block is occluded by gripper)
+                    holding_pred = None
+                    for pred in logical_state:
+                        if pred[0] == 'holding':
+                            holding_pred = pred
+                            break
+
+                    # Don't release - just wait for continue
                     if not self.command_bridge.wait_for_continue():
                         break
 
@@ -598,10 +644,24 @@ class PlannerAdapter:
                     observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
                         extra_viewpoints=True, print_status=False
                     )
+
+                    # Restore holding predicate if gripper is still closed
+                    if holding_pred and not gripper_open:
+                        logical_state = list(logical_state)
+                        if holding_pred not in logical_state:
+                            logical_state.append(holding_pred)
+                            print(f"[Pause/Resume] Restored holding predicate: {holding_pred}")
+                        # Remove hand_free if present
+                        hand_free = ('hand_free', str(self.robot_id))
+                        if hand_free in logical_state:
+                            logical_state.remove(hand_free)
+                        logical_state = tuple(logical_state)
+
                     self.command_bridge.broadcast_state(
                         observations, logical_state, stale_ids, uncertain_ids,
                         gripper_pos, gripper_open
                     )
+                    continue  # Return to loop top to re-plan with fresh state
 
             self.state_manager.add_log("info", "system", "Execution loop ended")
 
@@ -633,6 +693,48 @@ class PlannerAdapter:
             action_name, args, observations, block_transforms
         )
         return success
+
+    def _execute_pick_and_observe(self, action_name: str, args: tuple, observations: list):
+        """Execute pick action and return success + updated observations + state.
+
+        After grasping, the held block is occluded by the gripper, so we must
+        EXPLICITLY add the 'holding' predicate rather than relying on observation.
+
+        Returns:
+            Tuple of (success, observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open)
+        """
+        import time
+
+        success = self._execute_pick_action(action_name, args, observations)
+        if success:
+            time.sleep(0.3)
+            holding = not self._primitives.is_gripper_open()
+            if holding:
+                print(f"[Pick] Successfully grasped block (gripper closed)")
+
+                # Get fresh observations
+                obs, state, stale, uncertain, grip_pos, grip_open = self.observe_world(
+                    extra_viewpoints=True, print_status=False
+                )
+
+                # EXPLICITLY add holding predicate (block is occluded by gripper!)
+                held_block_id = args[0]
+                holding_pred = ('holding', held_block_id, str(self.robot_id))
+                state = list(state)
+                if holding_pred not in state:
+                    state.append(holding_pred)
+                    print(f"[Pick] Added holding predicate: {holding_pred}")
+                # Remove hand_free if present
+                hand_free = ('hand_free', str(self.robot_id))
+                if hand_free in state:
+                    state.remove(hand_free)
+                    print(f"[Pick] Removed hand_free predicate")
+
+                return True, obs, tuple(state), stale, uncertain, grip_pos, grip_open
+            else:
+                print(f"[Pick] Grasp failed - gripper not holding")
+
+        return False, observations, None, [], [], None, None
 
 
 def create_planner_with_ui(

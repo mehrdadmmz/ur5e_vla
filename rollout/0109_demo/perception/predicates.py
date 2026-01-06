@@ -26,9 +26,9 @@ DEFAULT_THRESHOLDS = {
         'z_tolerance': 1.2,    # Z alignment tolerance (multiplier of min height)
     },
     'above': {
-        'z_diff_min': 0.75,    # Min Z difference as fraction of top block height
-        'z_diff_max': 1.2,     # Max Z difference as fraction of top block height
-        'xy_tolerance': 0.7,   # XY overlap tolerance (multiplier of max dimension)
+        'z_diff_min': 0.5,     # Min Z difference as fraction of top block height (loosened from 0.75)
+        'z_diff_max': 1.5,     # Max Z difference as fraction of top block height (loosened from 1.2)
+        'xy_tolerance': 1.0,   # XY overlap tolerance (multiplier of max dimension) (loosened from 0.7)
     },
     'on_table': {
         'z_threshold': 1.4,    # Max Z above table as fraction of block height
@@ -63,8 +63,8 @@ def get_beside(obj1: List, obj2: List, table_z: float = None) -> Optional[List[T
     if obj1[1] != 2 or obj2[1] != 2:
         return None
 
-    id1, cls1, x1, y1, z1, w1, l1, h1 = obj1
-    id2, cls2, x2, y2, z2, w2, l2, h2 = obj2
+    id1, cls1, x1, y1, z1, w1, l1, h1, *_ = obj1
+    id2, cls2, x2, y2, z2, w2, l2, h2, *_ = obj2
 
     # Only process each pair once (when id1 < id2)
     if id1 >= id2:
@@ -103,8 +103,8 @@ def get_above(obj1: List, obj2: List, debug: bool = False) -> Optional[Tuple]:
     if (obj1[1] not in [2, 3]) or (obj2[1] not in [2, 3]):
         return None
 
-    id1, cls1, x1, y1, z1, w1, l1, h1 = obj1
-    id2, cls2, x2, y2, z2, w2, l2, h2 = obj2
+    id1, cls1, x1, y1, z1, w1, l1, h1, *_ = obj1
+    id2, cls2, x2, y2, z2, w2, l2, h2, *_ = obj2
 
     # Get thresholds
     t = _thresholds['above']
@@ -176,8 +176,8 @@ def get_on_table(obj1: List, obj2: List) -> Optional[Tuple]:
     if (obj1[1] not in [2, 3]) or obj2[1] != 0:
         return None
 
-    id1, cls1, x1, y1, z1, w1, l1, h1 = obj1
-    id2, cls2, x2, y2, z2, w2, l2, h2 = obj2
+    id1, cls1, x1, y1, z1, w1, l1, h1, *_ = obj1
+    id2, cls2, x2, y2, z2, w2, l2, h2, *_ = obj2
 
     # Get thresholds
     t = _thresholds['on_table']
@@ -200,8 +200,8 @@ def get_holding(obj1: List, obj2: List) -> Optional[Tuple]:
     if (obj1[1] not in [2, 3]) or obj2[1] != 1:
         return None
 
-    id1, cls1, x1, y1, z1, w1, l1, h1 = obj1
-    id2, cls2, x2, y2, z2, gripper_open = obj2
+    id1, cls1, x1, y1, z1, w1, l1, h1, *_ = obj1
+    id2, cls2, x2, y2, z2, gripper_open, *_ = obj2
 
     # If gripper is open, hand is free
     if gripper_open == 1:

@@ -10,14 +10,15 @@ interface GripperMeshProps {
 
 export function GripperMesh({ position, isOpen, holding }: GripperMeshProps) {
   const groupRef = useRef<Group>(null);
-  const currentPos = useRef(new Vector3(position[0], position[2], position[1]));
+  // Coordinate mapping (right-handed): Robot X→Three.js X, Robot Y→Three.js -Z, Robot Z→Three.js Y
+  const currentPos = useRef(new Vector3(position[0], position[2], -position[1]));
   const fingerOffset = useRef(isOpen ? 0.025 : 0.01);
 
   useFrame((_, delta) => {
     if (!groupRef.current) return;
 
-    // Smooth position interpolation
-    const target = new Vector3(position[0], position[2], position[1]);
+    // Smooth position interpolation (negate Y for right-handed coord system)
+    const target = new Vector3(position[0], position[2], -position[1]);
     currentPos.current.lerp(target, Math.min(delta * 8, 1));
     groupRef.current.position.copy(currentPos.current);
 
@@ -32,7 +33,7 @@ export function GripperMesh({ position, isOpen, holding }: GripperMeshProps) {
   const bodyColor = holding !== null ? '#fbbf24' : '#6b7280';
 
   return (
-    <group ref={groupRef} position={[position[0], position[2], position[1]]}>
+    <group ref={groupRef} position={[position[0], position[2], -position[1]]}>
       {/* Gripper body */}
       <mesh position={[0, 0.035, 0]}>
         <cylinderGeometry args={[0.015, 0.02, 0.05]} />

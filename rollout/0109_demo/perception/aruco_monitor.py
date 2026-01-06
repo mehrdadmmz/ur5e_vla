@@ -562,13 +562,19 @@ class ArucoMonitor:
             w, l, h = self.block_dims[marker_id]
             cls = self.block_class.get(marker_id, 2)
 
+            # Extract yaw (rotation around Z-axis) from rotation matrix
+            # Since marker is on top of block, Z is up, yaw = atan2(R[1,0], R[0,0])
+            R = T_base[:3, :3]
+            yaw = float(np.arctan2(R[1, 0], R[0, 0]))
+
             observations.append([
                 marker_id,  # id
                 float(cls),  # class
                 pos[0],  # x
                 pos[1],  # y
                 pos[2],  # z (marker is on top of block, so this is ~= z_center + h/2)
-                w, l, h
+                w, l, h,
+                yaw  # rotation around Z-axis in radians
             ])
 
             # Track if using stale data

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Grid } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, Grid, Line } from '@react-three/drei';
 import { useRobot } from '../../context/RobotContext';
 import { BlockMesh } from './BlockMesh';
 import { GripperMesh } from './GripperMesh';
@@ -38,13 +38,15 @@ export function Scene3D() {
   }, []);
 
   const { tableY, tableCenterZ } = config;
+  // Negate tableCenterZ for right-handed coordinate system (Robot Y → Three.js -Z)
+  const tableZ = -tableCenterZ;
 
   return (
     <div className="w-full h-full min-h-[400px] bg-gray-100 rounded-lg overflow-hidden border border-gray-200 shadow-sm">
       <Canvas shadows>
-        <PerspectiveCamera makeDefault position={[0.8, 0.6, 0.8]} fov={50} />
+        <PerspectiveCamera makeDefault position={[0.8, 0.6, -0.8]} fov={50} />
         <OrbitControls
-          target={[0, tableY + 0.05, tableCenterZ]}
+          target={[0, tableY + 0.05, tableZ]}
           minDistance={0.3}
           maxDistance={2}
           enablePan={true}
@@ -61,7 +63,7 @@ export function Scene3D() {
         <pointLight position={[-2, 2, 2]} intensity={0.2} />
 
         {/* Coordinate axes at table surface */}
-        <group position={[0, tableY, tableCenterZ]}>
+        <group position={[0, tableY, tableZ]}>
           <CoordinateAxes length={0.2} />
         </group>
 
@@ -69,7 +71,7 @@ export function Scene3D() {
         <mesh
           receiveShadow
           rotation={[-Math.PI / 2, 0, 0]}
-          position={[0, tableY - 0.005, tableCenterZ]}
+          position={[0, tableY - 0.005, tableZ]}
         >
           <planeGeometry args={[0.8, 0.6]} />
           <meshStandardMaterial color="#e5e7eb" />
@@ -78,7 +80,7 @@ export function Scene3D() {
         {/* Grid on table */}
         <Grid
           args={[0.8, 0.6]}
-          position={[0, tableY, tableCenterZ]}
+          position={[0, tableY, tableZ]}
           cellSize={0.05}
           cellThickness={0.5}
           cellColor="#9ca3af"
@@ -86,6 +88,19 @@ export function Scene3D() {
           sectionThickness={1}
           sectionColor="#6b7280"
           fadeDistance={2}
+        />
+
+        {/* Table border (black line) */}
+        <Line
+          points={[
+            [-0.4, tableY + 0.001, tableZ - 0.3],
+            [0.4, tableY + 0.001, tableZ - 0.3],
+            [0.4, tableY + 0.001, tableZ + 0.3],
+            [-0.4, tableY + 0.001, tableZ + 0.3],
+            [-0.4, tableY + 0.001, tableZ - 0.3],
+          ]}
+          color="black"
+          lineWidth={2}
         />
 
         {/* Blocks */}

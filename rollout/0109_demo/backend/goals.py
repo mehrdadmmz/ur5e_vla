@@ -14,39 +14,50 @@ from typing import Dict, List, Tuple, Optional
 #   - above_both(block, block1, block2) - block spans above both block1 and block2
 
 GOAL_LIBRARY: Dict[str, Dict] = {
-    'tower': {
-        'description': 'Build a 3-block tower',
-        'predicates': [
-            ('above', '1', '2'),
-            ('above', '0', '1'),
-        ]
-    },
+    # Bridge: two pillars with blocks stacked, then plank on top
     'bridge': {
         'description': 'Build a bridge with a plank on two pillars',
         'predicates': [
-            ('on-table', '3', '9'), ('on-table', '7', '9'),
-            ('beside', '7', '3'),
-            ('above_both', '6', '3', '7'),
+            ('on-table', '1', '9'), ('on-table', '2', '9'),
+            ('beside', '2', '1'),
+            ('above', '5', '1'), ('above', '7', '2'),
+            ('above_both', '6', '5', '7'),
         ]
     },
-    'two_towers': {
-        'description': 'Build two separate towers',
+    # Tall bridge: double-height pillars
+    'tall_bridge': {
+        'description': 'Build a tall bridge with double-height pillars',
         'predicates': [
-            ('above', '1', '2'),
-            ('above', '0', '1'),
-            ('above', '5', '3'),
+            ('on-table', '1', '9'), ('on-table', '2', '9'),
+            ('beside', '2', '1'),
+            ('above', '0', '1'), ('above', '3', '2'),
+            ('above', '7', '0'), ('above', '5', '3'),
+            ('above_both', '6', '7', '5'),
         ]
     },
-    'pyramid': {
-        'description': 'Build a pyramid structure',
+    # Simple tower: stack of blocks
+    'tower': {
+        'description': 'Build a 4-block tower',
         'predicates': [
-            ('on-table', '2', '9'), ('on-table', '1', '9'),
-            ('beside', '1', '2'),
-            ('above_both', '0', '2', '1'),
+            ('on-table', '0', '9'),
+            ('above', '1', '0'),
+            ('above', '2', '1'),
+            ('above', '3', '2'),
         ]
     },
-    'double_bridge': {
-        'description': 'Build a tall double bridge',
+    # CN Tower: tall stack
+    'cn_tower': {
+        'description': 'Build a tall tower (CN Tower)',
+        'predicates': [
+            ('on-table', '7', '9'),
+            ('above', '1', '7'), ('above', '3', '1'),
+            ('above', '5', '3'), ('above', '6', '5'),
+            ('above', '0', '6'),
+        ]
+    },
+    # House shape
+    'house': {
+        'description': 'Build a house structure',
         'predicates': [
             ('on-table', '3', '9'), ('on-table', '7', '9'),
             ('beside', '7', '3'),

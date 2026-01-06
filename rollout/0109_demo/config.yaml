@@ -92,14 +92,14 @@ motion:
 # Table workspace bounds for release action
 table_bounds:
   x_min: -0.3
-  x_max: 0.3
-  y_min: 0.3
-  y_max: 0.7
+  x_max: 0.24
+  y_min: 0.4
+  y_max: 0.75
 
 # Object IDs
 table_id: 9               # ID for table object
 robot_id: 8               # ID for robot/gripper object
-table_z: -0.15              # Z coordinate of table surface
+table_z: -0.14              # Z coordinate of table surface
 
 # Block dimensions by marker ID
 # Format: {marker_id: [width, length, height]}
@@ -108,7 +108,7 @@ block_dims:
   1: [0.045, 0.045, 0.03]     # Cube
   2: [0.045, 0.045, 0.03]     # Cube
   3: [0.0375, 0.0375, 0.06]   # Cube
-  4: [0.15, 0.04, 0.02]       # Plank (swapped width/length)
+  4: [0.04, 0.15, 0.02]       # Plank
   5: [0.0375, 0.0375, 0.06]   # Cube
   6: [0.15, 0.05, 0.03]       # Plank (swapped width/length)
   7: [0.0375, 0.0375, 0.06]   # Cube
@@ -134,7 +134,7 @@ grasp_orientations:
   3: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
   4: [0.0, 3.1416]                        # Plank - grasp along short side (swapped)
   5: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
-  6: [0.0, 3.1416]                        # Plank - grasp along short side (swapped)
+  6: [1.5708, -1.5708]                        # Plank - grasp along short side (swapped)
   7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
 
 visual: true             # Show ArUco detection window

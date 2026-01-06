@@ -294,6 +294,7 @@ def get_planner_adapter():
 
 @router.post("/observe")
 async def observe_world(
+    clear_stale: bool = True,
     state_manager: StateManager = Depends(get_state_manager)
 ) -> Dict[str, Any]:
     """
@@ -301,6 +302,9 @@ async def observe_world(
 
     Calls planner_adapter.observe_world() to get fresh observations
     from the perception system and updates the state manager.
+
+    Args:
+        clear_stale: If True (default), exclude stale/non-visible blocks from state
     """
     try:
         adapter = get_planner_adapter()
@@ -310,6 +314,17 @@ async def observe_world(
         # Get fresh observations
         result = adapter.observe_world(extra_viewpoints=False, print_status=True)
         observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = result
+
+        # If clearing stale, filter out stale observations
+        if clear_stale:
+            observations = [obs for obs in observations if int(obs[0]) not in stale_ids]
+            # Also filter predicates that reference stale blocks
+            stale_str_ids = {str(sid) for sid in stale_ids}
+            logical_state = [
+                pred for pred in logical_state
+                if not any(arg in stale_str_ids for arg in pred[1:])
+            ]
+            stale_ids = []  # Clear stale list since we filtered them
 
         # Convert observations to block format for state manager
         # Observation format varies:
@@ -323,46 +338,33 @@ async def observe_world(
             if obj_class in [2, 3] and len(obs) >= 8:  # cube or plank
                 x, y, z = obs[2], obs[3], obs[4]
                 w, l, h = obs[5], obs[6], obs[7]
+                yaw = obs[8] if len(obs) > 8 else 0.0
                 blocks.append({
                     'id': int(obj_id),
                     'class': obj_class,
                     'position': [x, y, z],
                     'dimensions': [w, l, h],
+                    'yaw': yaw,
                     'confident': int(obj_id) not in uncertain_ids,
                     'stale': int(obj_id) in stale_ids,
                 })
 
-        # Convert predicates
-        predicates = [{'name': p[0], 'args': list(p[1:])} for p in logical_state]
-
-        # Update state manager with gripper data
-        state_manager.update_state(
+        # Update state manager - use update_observations to properly parse blocks
+        state_manager.update_observations(
             observations=observations,
+            stale_ids=stale_ids,
+            uncertain_ids=uncertain_ids,
+        )
+
+        # Update predicates and gripper state
+        state_manager.update_state(
             predicates=logical_state,
-            gripper_position=gripper_pos,
+            gripper_position=tuple(gripper_pos) if gripper_pos is not None else (0.0, 0.5, 0.6),
             gripper_open=gripper_open,
         )
 
-        # Broadcast via WebSocket
-        try:
-            from ..main import get_connection_manager
-        except ImportError:
-            from main import get_connection_manager
-
-        conn_manager = get_connection_manager()
-        if conn_manager:
-            import asyncio
-            await conn_manager.broadcast({
-                "type": "state_update",
-                "data": {
-                    "blocks": blocks,
-                    "predicates": predicates,
-                    "stale_ids": stale_ids,
-                    "uncertain_ids": uncertain_ids,
-                    "gripper_position": gripper_pos,
-                    "gripper_open": gripper_open,
-                }
-            })
+        # Convert predicates for response
+        predicates = [{'name': p[0], 'args': list(p[1:])} for p in logical_state]
 
         return {
             "success": True,

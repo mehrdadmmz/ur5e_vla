@@ -35,6 +35,7 @@ class BlockState:
     block_class: int  # 2=cube, 3=plank
     position: Tuple[float, float, float]
     dimensions: Tuple[float, float, float]
+    yaw: float = 0.0  # rotation around Z-axis in radians
     confident: bool = True
     stale: bool = False
 
@@ -44,6 +45,7 @@ class BlockState:
             "class": self.block_class,
             "position": list(self.position),
             "dimensions": list(self.dimensions),
+            "yaw": self.yaw,
             "confident": self.confident,
             "stale": self.stale
         }
@@ -266,11 +268,13 @@ class StateManager:
         blocks = []
         for obs in observations:
             if len(obs) >= 8 and obs[1] in (2, 3):  # Only blocks (cube=2, plank=3)
+                yaw = float(obs[8]) if len(obs) > 8 else 0.0
                 block = BlockState(
                     id=int(obs[0]),
                     block_class=int(obs[1]),
                     position=(float(obs[2]), float(obs[3]), float(obs[4])),
                     dimensions=(float(obs[5]), float(obs[6]), float(obs[7])),
+                    yaw=yaw,
                     confident=int(obs[0]) not in uncertain_ids,
                     stale=int(obs[0]) in stale_ids
                 )
@@ -344,7 +348,17 @@ class StateManager:
         """Request quit (called from UI)."""
         self._quit_requested.set()
         self._continue_event.set()  # Unblock if waiting
-        self.add_log("info", "system", "Quit requested")
+        # Clear goal state on quit
+        self.update_state(
+            goal=[],
+            goal_name="",
+            goal_satisfied=False,
+            unsatisfied_goals=[],
+            plan=[],
+            current_action_index=-1,
+            execution_status=ExecutionStatus.IDLE
+        )
+        self.add_log("info", "system", "Quit requested - goal cleared")
 
     def is_pause_requested(self) -> bool:
         """Check if pause requested (called from execution thread)."""

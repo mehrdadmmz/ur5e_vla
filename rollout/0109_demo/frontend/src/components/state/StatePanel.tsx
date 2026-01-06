@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useRobot } from '../../context/RobotContext';
 import { Predicate } from '../../types';
 
@@ -27,12 +28,43 @@ const PREDICATE_ORDER = [
 
 export function StatePanel() {
   const { state } = useRobot();
+  const [isResetting, setIsResetting] = useState(false);
   const grouped = groupPredicates(state.predicates);
 
-  return (
-    <div className="bg-white rounded-lg p-4 h-full flex flex-col border border-gray-200 shadow-sm">
-      <h2 className="text-lg font-semibold text-gray-800 mb-3">World State</h2>
+  const handleReset = async () => {
+    setIsResetting(true);
+    try {
+      const res = await fetch('/api/state/observe', { method: 'POST' });
+      const data = await res.json();
+      if (!data.success) {
+        console.error('Reset observation failed:', data.message);
+      }
+    } catch (err) {
+      console.error('Reset observation error:', err);
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
+  return (
+    <div className="bg-white rounded-lg p-4 h-full flex flex-col border border-gray-200 shadow-sm overflow-hidden">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
+        <h2 className="text-lg font-semibold text-gray-800">World State</h2>
+        <button
+          onClick={handleReset}
+          disabled={isResetting || !state.robotConnected}
+          className={`px-3 py-1 text-xs font-medium rounded transition-colors ${
+            isResetting || !state.robotConnected
+              ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+              : 'bg-blue-500 text-white hover:bg-blue-600'
+          }`}
+        >
+          {isResetting ? 'Observing...' : 'Reset'}
+        </button>
+      </div>
+
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto min-h-0">
       {/* Block summary */}
       <div className="mb-3 text-sm text-gray-600">
         {state.blocks.length} blocks detected
@@ -66,7 +98,7 @@ export function StatePanel() {
       </div>
 
       {/* Predicates */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="mb-4">
         <h3 className="text-sm font-medium text-gray-500 mb-2">Predicates</h3>
         <div className="space-y-2">
           {PREDICATE_ORDER.map((type) =>
@@ -126,6 +158,7 @@ export function StatePanel() {
           </div>
         </div>
       )}
+      </div>{/* End scrollable content area */}
     </div>
   );
 }

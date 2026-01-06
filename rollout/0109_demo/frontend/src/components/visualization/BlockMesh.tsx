@@ -10,11 +10,14 @@ interface BlockMeshProps {
 
 export function BlockMesh({ block }: BlockMeshProps) {
   const meshRef = useRef<Mesh>(null);
+  // Coordinate mapping (right-handed): Robot X→Three.js X, Robot Y→Three.js -Z, Robot Z→Three.js Y
   const currentPos = useRef(
-    new Vector3(block.position[0], block.position[2], block.position[1])
+    new Vector3(block.position[0], block.position[2], -block.position[1])
   );
+  // Robot yaw (around Z) maps to Three.js rotation around Y
+  const currentYaw = useRef(block.yaw ?? 0);
 
-  // Smooth position animation
+  // Smooth position and rotation animation
   // Note: block.position[2] is the TOP of the block (ArUco marker position)
   // Three.js box center = top - half_height
   useFrame((_, delta) => {
@@ -23,11 +26,16 @@ export function BlockMesh({ block }: BlockMeshProps) {
     const target = new Vector3(
       block.position[0],
       block.position[2] - block.dimensions[2] / 2,
-      block.position[1]
+      -block.position[1]  // Negate for right-handed coord system
     );
 
     currentPos.current.lerp(target, Math.min(delta * 5, 1));
     meshRef.current.position.copy(currentPos.current);
+
+    // Lerp rotation (robot yaw around Z -> Three.js Y-rotation)
+    const targetYaw = block.yaw ?? 0;
+    currentYaw.current += (targetYaw - currentYaw.current) * Math.min(delta * 5, 1);
+    meshRef.current.rotation.y = currentYaw.current;
   });
 
   // Determine opacity based on confidence
@@ -40,7 +48,7 @@ export function BlockMesh({ block }: BlockMeshProps) {
         position={[
           block.position[0],
           block.position[2] - block.dimensions[2] / 2,
-          block.position[1],
+          -block.position[1],  // Negate for right-handed coord system
         ]}
         castShadow
         receiveShadow
@@ -62,7 +70,7 @@ export function BlockMesh({ block }: BlockMeshProps) {
         position={[
           block.position[0],
           block.position[2] + 0.02,
-          block.position[1],
+          -block.position[1],  // Negate for right-handed coord system
         ]}
         center
         distanceFactor={0.5}

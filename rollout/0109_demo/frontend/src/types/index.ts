@@ -6,6 +6,7 @@ export interface BlockObservation {
   class: BlockClass;
   position: [number, number, number];
   dimensions: [number, number, number];
+  yaw: number;  // rotation around Z-axis in radians
   confident: boolean;
   stale: boolean;
 }
