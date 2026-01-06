@@ -24,3 +24,22 @@ data/*/
 .DS_Store
 Thumbs.db
 rollout/bw_pddl_mop/logs/
+
+# Environment files (secrets)
+.env
+.env.*
+*.env
+
+# Node.js
+node_modules/
+
+# PDDLStream compiled binaries (large ~500MB)
+**/pddlstream/downward/builds/
+
+# Build outputs
+dist/
+build/
+
+# Temporary files
+*.tmp
+**/temp/

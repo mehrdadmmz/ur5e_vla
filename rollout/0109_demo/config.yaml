@@ -1,0 +1,160 @@
+# Block World Planner Configuration
+# ==================================
+
+robot:
+  ip: "192.168.56.101"
+  speed: 0.3              # Joint speed (rad/s)
+  acceleration: 0.3       # Joint acceleration (rad/s^2)
+  # Initial Cartesian pose [x, y, z, qx, qy, qz, qw] in meters and quaternion
+  init_pose: [0.00, 0.50, 0.60, 1.0, 0.0, 0.0, 0.0]
+
+  # Joint limits [min, max] in radians for each joint (0-5)
+  # Motions that would exceed these limits are rejected
+  joint_limits:
+    0: [-3.1416, 3.1416]   # Base
+    1: [-3.1416, 3.1416]   # Shoulder
+    2: [-3.1416, 3.1416]   # Elbow
+    3: [-3.1416, 3.1416]   # Wrist 1
+    4: [-3.1416, 3.1416]   # Wrist 2
+    5: [-1.5708, 4.7124]   # Wrist 3: -90° to 270°
+
+gripper:
+  port: 63352
+  # Distance from robot flange to gripper fingertips (meters)
+  # Measure this on your setup - typically 0.15-0.20m for Robotiq grippers
+  z_offset: 0.25
+  # Gripper positions (0=fully open, 255=fully closed)
+  open_pos: 100
+  close_pos: 255
+  # Gripper speed and force (0-255)
+  speed: 100
+  force: 50
+  # Timing (seconds)
+  open_wait: 0.5           # Wait after opening
+  close_wait: 1.5          # Fallback wait if no blocking move
+  open_margin: 10          # Position margin for "is open" check
+
+# Camera configuration
+# Use 'base' for fixed base-mounted camera
+# Use 'wrist' for wrist-mounted camera (requires hand-eye calibration)
+camera:
+  type: "wrist"            # "base" or "wrist"
+  serial: "243322072780"  # camera serial
+
+  # For base camera: fixed transform from camera to robot base frame
+  # Update this with your actual calibration!
+  # T_cam_base:
+  #   - [0.0761, 0.8458, -0.5280, 1.038]
+  #   - [0.9950, -0.0305, 0.0946, 0.009]
+  #   - [0.0640, -0.5326, -0.8439, 0.416]
+  #   - [0.0, 0.0, 0.0, 1.0]
+
+  # For wrist camera: path to hand-eye calibration file
+  calibration_file: "../../handeye/handeye_data/calibration_20260102_142634.npy"
+  # calibration_file: "../../handeye/handeye_data/calibration_no_rotation.npy"
+
+  # Calibration correction offset [x, y, z] in robot base frame (meters)
+  # Use this to fine-tune if detected positions are slightly off
+  offset: [-0.00, 0.00, 0.0]
+
+aruco:
+  marker_size: 0.032      # Marker size in meters (32mm)
+  # Detection confidence thresholds
+  max_reproj_error: 2.0   # pixels - reject if higher
+  min_sharpness: 30.0     # gradient magnitude - reject if lower
+  confident_reproj: 1.0   # pixels - confident if below this
+  confident_sharpness: 50.0  # gradient magnitude - confident if above this
+  stale_age: 2.0          # seconds - marker data considered stale after this
+
+motion:
+  approach_height: 0.06   # Height above block for approach (meters)
+  grasp_depth: 0.01       # How deep to grasp below block top (meters)
+  action_delay: 0.5       # Delay between motion steps (seconds)
+  beside_gap: 0.025        # Gap between blocks when placing beside (meters) - for bridge bases
+  place_clearance: 0.00  # Extra clearance when placing (meters)
+  linear_speed_factor: 0.5  # Speed multiplier for linear moves (relative to joint speed)
+  linear_acceleration: 0.1  # Acceleration for linear moves (m/s^2) - lower = slower/smoother
+  # Re-observation
+  hover_height: 0.15      # Height above block for re-observation (meters)
+  observation_wait: 0.5   # Wait for detection after moving (seconds)
+  # Release action - finding empty spot on table
+  release_min_dist: 0.15  # Minimum distance from other blocks (meters) - increased for safety
+
+  # observe_world settings - ensures synchronized observations and logical state
+  stability_wait: 1.0     # Wait for camera stabilization after moving (seconds)
+  # Extra viewpoints for better coverage (offsets from init_pose in meters [dx, dy, dz])
+  observe_viewpoints:
+    - [0.00, 0.00, 0.0]
+    # - [0.10, 0.10, 0.0]    # Right 
+    # - [0.0, 0.20, 0.0]    # Forward 
+    # - [-0.10, 0.10, 0.0]   # Left 
+
+# Table workspace bounds for release action
+table_bounds:
+  x_min: -0.3
+  x_max: 0.3
+  y_min: 0.3
+  y_max: 0.7
+
+# Object IDs
+table_id: 9               # ID for table object
+robot_id: 8               # ID for robot/gripper object
+table_z: -0.15              # Z coordinate of table surface
+
+# Block dimensions by marker ID
+# Format: {marker_id: [width, length, height]}
+block_dims:
+  0: [0.0375, 0.0375, 0.06]   # Cube
+  1: [0.045, 0.045, 0.03]     # Cube
+  2: [0.045, 0.045, 0.03]     # Cube
+  3: [0.0375, 0.0375, 0.06]   # Cube
+  4: [0.15, 0.04, 0.02]       # Plank (swapped width/length)
+  5: [0.0375, 0.0375, 0.06]   # Cube
+  6: [0.15, 0.05, 0.03]       # Plank (swapped width/length)
+  7: [0.0375, 0.0375, 0.06]   # Cube
+
+# Block class by marker ID (2=cube, 3=plank)
+block_class:
+  0: 2
+  1: 2
+  2: 2
+  3: 2
+  4: 3
+  5: 2
+  6: 3
+  7: 2
+
+# Grasp orientations per block ID (list of valid Z-rotations in radians, relative to block frame)
+# 0 = gripper aligned with block X-axis, π/2 = aligned with Y-axis
+# Multiple angles allow symmetric grasping (e.g., grab from either side)
+grasp_orientations:
+  0: [0.0, 1.5708, 3.1416, -1.5708]  # Cube - 4 symmetric sides
+  1: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  2: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  3: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  4: [0.0, 3.1416]                        # Plank - grasp along short side (swapped)
+  5: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  6: [0.0, 3.1416]                        # Plank - grasp along short side (swapped)
+  7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+
+visual: true             # Show ArUco detection window
+debug_predicates: true   # Print debug info for predicate detection (positions, thresholds)
+
+# Predicate detection thresholds (multipliers relative to block dimensions)
+predicates:
+  # 'beside' detection - blocks are horizontally adjacent
+  beside:
+    y_sep_min: 0.0        # Min Y separation as fraction of combined length
+    y_sep_max: 1.5       # Max Y separation as fraction of combined length
+    x_tolerance: 0.5    # X alignment tolerance (multiplier of min width)
+    z_tolerance: 2.0      # Z alignment tolerance (multiplier of min height) - increased for detection variance
+
+  # 'above' detection - block is stacked on another
+  above:
+    z_diff_min: 0.5      # Min Z difference as fraction of top block height
+    z_diff_max: 1.5       # Max Z difference as fraction of top block height
+    xy_tolerance: 0.3     # XY overlap tolerance (multiplier of max dimension)
+
+  # 'on_table' detection - block is on table surface
+  on_table:
+    z_threshold: 3.0      # Max Z above table as fraction of block height
