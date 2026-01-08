@@ -20,6 +20,7 @@ const PREDICATE_ORDER = [
   'above',
   'beside',
   'above_both',
+  'floating',
   'holding',
   'hand_free',
   'top',
@@ -98,7 +99,7 @@ export function StatePanel() {
       </div>
 
       {/* Predicates */}
-      <div className="mb-4">
+      <div>
         <h3 className="text-sm font-medium text-gray-500 mb-2">Predicates</h3>
         <div className="space-y-2">
           {PREDICATE_ORDER.map((type) =>
@@ -113,51 +114,6 @@ export function StatePanel() {
           )}
         </div>
       </div>
-
-      {/* Current Goal Predicates */}
-      {state.goal && state.goal.length > 0 && (
-        <div className="mt-4 pt-3 border-t border-gray-200">
-          <h3 className="text-sm font-medium text-gray-500 mb-2">
-            Goal: {state.goalName || 'Custom'}
-          </h3>
-          <div className="space-y-1">
-            {state.goal.map((pred, idx) => {
-              // Check if this predicate is satisfied
-              const isSatisfied = !state.unsatisfiedGoals.some(
-                (u) => u.name === pred.name && u.args.join(',') === pred.args.join(',')
-              );
-              return (
-                <div
-                  key={idx}
-                  className={`text-sm px-2 py-1 rounded ${
-                    isSatisfied
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-yellow-100 text-yellow-700'
-                  }`}
-                >
-                  <span className="font-medium">{pred.name}</span>({pred.args.join(', ')})
-                  {isSatisfied && <span className="ml-2">&#10003;</span>}
-                </div>
-              );
-            })}
-          </div>
-          {/* Progress indicator */}
-          <div className="mt-2 flex items-center justify-between text-sm">
-            <span className="text-gray-500">
-              {state.goal.length - state.unsatisfiedGoals.length}/{state.goal.length} satisfied
-            </span>
-            {state.goalSatisfied ? (
-              <span className="px-2 py-1 bg-green-500 text-white text-xs rounded">
-                Complete
-              </span>
-            ) : (
-              <span className="px-2 py-1 bg-yellow-500 text-white text-xs rounded">
-                In Progress
-              </span>
-            )}
-          </div>
-        </div>
-      )}
       </div>{/* End scrollable content area */}
     </div>
   );

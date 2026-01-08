@@ -1,6 +1,11 @@
 import { useState, useRef, useCallback } from 'react';
+import { useRobot } from '../../context/RobotContext';
+import { useWebSocket } from '../../context/WebSocketContext';
 
 export function VoicePanel() {
+  const { state } = useRobot();
+  const { sendCommand } = useWebSocket();
+
   const [isRecording, setIsRecording] = useState(false);
   const [transcription, setTranscription] = useState('');
   const [feedback, setFeedback] = useState<{ success: boolean; message: string } | null>(null);
@@ -8,10 +13,21 @@ export function VoicePanel() {
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const streamRef = useRef<MediaStream | null>(null);
+  const wasRunningRef = useRef(false);
 
   const startRecording = useCallback(async () => {
     try {
+      // Check if execution is currently running and pause it
+      const isExecuting = state.executionStatus === 'executing';
+      wasRunningRef.current = isExecuting;
+
+      if (isExecuting) {
+        sendCommand('pause');
+      }
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
       const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
       mediaRecorder.ondataavailable = (event) => {
@@ -43,29 +59,63 @@ export function VoicePanel() {
             if (response.ok) {
               const data = await response.json();
               setTranscription(data.transcript || '');
-              setFeedback({
-                success: data.executed,
-                message: data.message,
-              });
+
+              // Check if any commands were recognized
+              const hasCommands = data.commands && data.commands.length > 0;
+
+              if (!hasCommands) {
+                // No command recognized
+                if (wasRunningRef.current) {
+                  // Resume execution since we paused it
+                  sendCommand('continue');
+                  setFeedback({
+                    success: true,
+                    message: 'No command recognized, resuming...',
+                  });
+                } else {
+                  setFeedback({
+                    success: false,
+                    message: data.message || 'No command recognized',
+                  });
+                }
+              } else {
+                // Commands were executed
+                setFeedback({
+                  success: data.executed,
+                  message: data.message,
+                });
+              }
             } else {
+              // Request failed - resume if we paused
+              if (wasRunningRef.current) {
+                sendCommand('continue');
+              }
               setFeedback({
                 success: false,
                 message: 'Failed to process voice command',
               });
             }
           } catch (err) {
+            // Network error - resume if we paused
+            if (wasRunningRef.current) {
+              sendCommand('continue');
+            }
             setFeedback({
               success: false,
               message: 'Network error',
             });
           } finally {
             setIsProcessing(false);
+            wasRunningRef.current = false;
           }
         };
         reader.readAsDataURL(audioBlob);
 
         // Stop all tracks
-        stream.getTracks().forEach((track) => track.stop());
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach((track) => track.stop());
+          streamRef.current = null;
+        }
       };
 
       mediaRecorderRef.current = mediaRecorder;
@@ -74,12 +124,17 @@ export function VoicePanel() {
       setTranscription('');
       setFeedback(null);
     } catch (err) {
+      // Microphone access denied - resume if we paused
+      if (wasRunningRef.current) {
+        sendCommand('continue');
+        wasRunningRef.current = false;
+      }
       setFeedback({
         success: false,
         message: 'Microphone access denied',
       });
     }
-  }, []);
+  }, [state.executionStatus, sendCommand]);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && isRecording) {

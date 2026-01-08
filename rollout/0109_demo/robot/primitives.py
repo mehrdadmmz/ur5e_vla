@@ -41,6 +41,10 @@ class BlockPrimitives:
         gripper_open_margin: int = 10,   # Margin for "is open" check
         release_min_dist: float = 0.08,  # Min distance from other blocks for release
         table_bounds: Optional[Dict] = None,  # {x_min, x_max, y_min, y_max}
+        contact_speed: float = 0.02,    # Speed for contact detection (m/s)
+        contact_acceleration: float = 0.5,  # Acceleration for contact detection (m/s^2)
+        contact_retract: float = 0.002,  # Retract distance after contact (meters)
+        safe_height: float = 0.45,      # Minimum safe Z height for traversal moves
     ):
         """
         Initialize block primitives.
@@ -67,6 +71,9 @@ class BlockPrimitives:
             gripper_open_margin: Position margin for "is open" check
             release_min_dist: Minimum distance from other blocks for release action
             table_bounds: Workspace bounds for release {x_min, x_max, y_min, y_max}
+            contact_speed: Speed for contact detection moves (m/s)
+            contact_acceleration: Acceleration for contact detection (m/s^2)
+            contact_retract: Distance to retract after contact (meters)
         """
         self.rtde_c = rtde_c
         self.rtde_r = rtde_r
@@ -90,6 +97,10 @@ class BlockPrimitives:
         self.gripper_open_margin = gripper_open_margin
         self.release_min_dist = release_min_dist
         self.table_bounds = table_bounds or {'x_min': -0.3, 'x_max': 0.3, 'y_min': 0.3, 'y_max': 0.7}
+        self.contact_speed = contact_speed
+        self.contact_acceleration = contact_acceleration
+        self.contact_retract = contact_retract
+        self.safe_height = safe_height
 
         # Default orientation: gripper pointing down
         # This is a 180 degree rotation around X (gripper Z pointing down)
@@ -97,6 +108,9 @@ class BlockPrimitives:
 
         # Grasp orientations per block ID (will be set from config)
         self.grasp_orientations: Dict[int, List[float]] = {}
+
+        # Block dimensions per block ID [width, length, height] (will be set from config)
+        self.block_dims: Dict[int, List[float]] = {}
 
         # Joint limits per joint index (will be set from config)
         self.joint_limits: Optional[Dict[int, List[float]]] = None
@@ -148,6 +162,87 @@ class BlockPrimitives:
 
         self.rtde_c.moveL(pose, speed, self.linear_acceleration)
         return True
+
+    def _move_to_home(self) -> bool:
+        """Move robot to safe height at current XY position."""
+        current_pose = self.rtde_r.getActualTCPPose()
+        home_pose = current_pose.copy()
+        home_pose[2] = self.safe_height
+        print(f"Moving to safe height: z={self.safe_height:.3f}")
+        return self._move_to_pose(home_pose)
+
+    def _ensure_safe_height(self) -> bool:
+        """Ensure robot is at safe height before traversal moves.
+
+        If current Z is below safe_height, moves straight up first.
+        This prevents the robot from taking low paths through the workspace.
+        """
+        current_pose = self.rtde_r.getActualTCPPose()
+        current_z = current_pose[2]
+
+        if current_z < self.safe_height:
+            # Move straight up to safe height first
+            safe_pose = current_pose.copy()
+            safe_pose[2] = self.safe_height
+            print(f"  Lifting to safe height: {current_z:.3f} -> {self.safe_height:.3f}")
+            return self._move_linear(safe_pose)
+        return True
+
+    def _move_until_contact(
+        self,
+        direction: List[float] = None,
+        speed: Optional[float] = None,
+        acceleration: Optional[float] = None,
+        retract_on_contact: Optional[float] = None
+    ) -> bool:
+        """
+        Move robot until contact is detected.
+
+        Uses force feedback to detect when the gripper/block makes contact
+        with a surface. This is more robust than calculated Z positions.
+
+        Args:
+            direction: 6D direction vector [x, y, z, rx, ry, rz].
+                      Default is [0, 0, -1, 0, 0, 0] (move down).
+            speed: Linear speed in m/s (uses self.contact_speed if None)
+            acceleration: Acceleration in m/s² (uses self.contact_acceleration if None)
+            retract_on_contact: Distance to retract after contact (meters).
+                               Uses self.contact_retract if None.
+                               Small retract prevents excessive force on block.
+
+        Returns:
+            True if contact was detected, False if movement failed
+        """
+        if direction is None:
+            direction = [0.0, 0.0, -1.0, 0.0, 0.0, 0.0]  # Down
+        if speed is None:
+            speed = self.contact_speed
+        if acceleration is None:
+            acceleration = self.contact_acceleration
+        if retract_on_contact is None:
+            retract_on_contact = self.contact_retract
+
+        # Tool velocity in the direction of movement
+        xd = [d * speed for d in direction]
+
+        try:
+            # moveUntilContact returns True if contact detected
+            contact = self.rtde_c.moveUntilContact(xd, direction, acceleration)
+
+            if contact and retract_on_contact > 0:
+                # Retract slightly to reduce force on the placed block
+                current_pose = self.rtde_r.getActualTCPPose()
+                retract_pose = current_pose.copy()
+                # Retract in opposite direction
+                for i in range(3):
+                    retract_pose[i] -= direction[i] * retract_on_contact
+                self.rtde_c.moveL(retract_pose, speed, acceleration)
+
+            return contact
+
+        except Exception as e:
+            print(f"moveUntilContact failed: {e}")
+            return False
 
     def _open_gripper(self):
         """Open the gripper."""
@@ -210,6 +305,82 @@ class BlockPrimitives:
                                (in radians, relative to block frame)
         """
         self.grasp_orientations = grasp_orientations
+
+    def set_block_dims(self, block_dims: Dict[int, List[float]]):
+        """Set block dimensions for blocks.
+
+        Args:
+            block_dims: Dict mapping block_id to [width, length, height] in meters
+        """
+        self.block_dims = block_dims
+
+    def _get_long_axis_offset(self, block_id: int) -> float:
+        """Get the angular offset of the block's long axis from its X-axis.
+
+        For blocks where Y > X (long axis is Y), returns π/2.
+        For blocks where X >= Y (long axis is X), returns 0.
+
+        This is used to compute parallel placement for blocks with different aspect ratios.
+
+        Args:
+            block_id: Block marker ID
+
+        Returns:
+            0.0 if long axis is X, π/2 if long axis is Y
+        """
+        dims = self.block_dims.get(block_id, [0.04, 0.04, 0.04])
+        if dims[1] > dims[0]:  # Y > X, long axis is Y
+            return np.pi / 2
+        return 0.0
+
+    def _find_reference_plank_below(
+        self,
+        target_x: float,
+        target_y: float,
+        target_z: float,
+        observations: List[List],
+        xy_tolerance: float = 0.10
+    ) -> Optional[List]:
+        """Find a plank below the target position to use as orientation reference.
+
+        When placing a plank on a cube, we want to align with other planks in the
+        stack (e.g., for Chinese characters where planks sandwich cubes).
+
+        Args:
+            target_x, target_y, target_z: Position of placement target
+            observations: Current world state
+            xy_tolerance: Max XY distance to consider "in the same stack"
+
+        Returns:
+            Observation of reference plank, or None if not found
+        """
+        best_plank = None
+        best_z = -float('inf')
+
+        for obs in observations:
+            if len(obs) < 9:
+                continue
+            block_class = obs[1]
+            if block_class != 3:  # Not a plank
+                continue
+
+            bx, by, bz = obs[2], obs[3], obs[4]
+
+            # Check if below target
+            if bz >= target_z:
+                continue
+
+            # Check XY proximity (in same stack)
+            xy_dist = np.sqrt((bx - target_x)**2 + (by - target_y)**2)
+            if xy_dist > xy_tolerance:
+                continue
+
+            # Prefer highest plank below target
+            if bz > best_z:
+                best_z = bz
+                best_plank = obs
+
+        return best_plank
 
     def set_joint_limits(self, joint_limits: Dict[int, List[float]]):
         """Set joint limits for each joint.
@@ -294,7 +465,8 @@ class BlockPrimitives:
     def _compute_grasp_orientation(
         self,
         block_id: int,
-        T_base_marker: Optional[np.ndarray] = None
+        T_base_marker: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
     ) -> np.ndarray:
         """Compute gripper orientation for grasping a block.
 
@@ -303,11 +475,13 @@ class BlockPrimitives:
         with block sides.
 
         Selects the grasp angle that results in total Z-rotation closest to 0,
-        minimizing wrist joint movement.
+        minimizing wrist joint movement. If target_orientation is provided
+        (e.g., for cover action), selects an angle compatible with the target.
 
         Args:
             block_id: Block marker ID
             T_base_marker: 4x4 transform of marker in base frame (optional)
+            target_orientation: Target yaw for placement (optional, for cover action)
 
         Returns:
             Rotation vector [rx, ry, rz] for gripper pose
@@ -326,16 +500,51 @@ class BlockPrimitives:
             grasp_angles = [grasp_angles]  # Handle single value
 
         # Compute total rotation for each candidate angle
-        # Pick the one that results in normalized total_z_rotation closest to 0
-        # This minimizes wrist joint rotation from default pose
         candidates = [
             (a, self._normalize_angle(block_z_angle + a))
             for a in grasp_angles
         ]
-        best_angle, total_z_rotation = min(candidates, key=lambda x: abs(x[1]))
+
+        if target_orientation is not None:
+            # For cover action: only allow 0° or 180° from target (plank is symmetric)
+            # Filter candidates to those within ~45° of target or target+180°
+            valid_candidates = []
+            for angle, total_rot in candidates:
+                diff = abs(self._normalize_angle(total_rot - target_orientation))
+                # Accept if within ~45° of 0° or 180° from target
+                if diff < np.pi / 4 or abs(diff - np.pi) < np.pi / 4:
+                    valid_candidates.append((angle, total_rot, diff))
+
+            if valid_candidates:
+                # Pick the one closest to target (prefer 0° over 180°)
+                best = min(valid_candidates, key=lambda x: min(x[2], abs(x[2] - np.pi)))
+                best_angle, total_z_rotation = best[0], best[1]
+                print(f"  [Grasp] Selected orientation {np.degrees(total_z_rotation):.1f}° "
+                      f"for target {np.degrees(target_orientation):.1f}°")
+            else:
+                # Fall back to original selection if no valid candidates
+                best_angle, total_z_rotation = min(candidates, key=lambda x: abs(x[1]))
+                print(f"  [Grasp] Warning: No valid orientation for target, using {np.degrees(total_z_rotation):.1f}°")
+        else:
+            # Original behavior: pick angle closest to 0 (minimize wrist rotation)
+            best_angle, total_z_rotation = min(candidates, key=lambda x: abs(x[1]))
 
         # Build gripper orientation: 180° around X (pointing down) + Z rotation
         R_gripper = Rotation.from_euler('xz', [np.pi, total_z_rotation])
+        return R_gripper.as_rotvec()
+
+    def _compute_place_orientation(self, target_yaw: float) -> np.ndarray:
+        """
+        Compute gripper orientation for placing a block at target yaw.
+
+        Args:
+            target_yaw: Target yaw angle in radians (Z-axis rotation)
+
+        Returns:
+            Rotation vector [rx, ry, rz] for gripper pose
+        """
+        # Gripper points down (180° around X) with Z rotation for target yaw
+        R_gripper = Rotation.from_euler('xz', [np.pi, target_yaw])
         return R_gripper.as_rotvec()
 
     def move_to_cartesian(
@@ -373,7 +582,8 @@ class BlockPrimitives:
         block_id: int,
         observations: List[List],
         action_desc: str,
-        block_transform: Optional[np.ndarray] = None
+        block_transform: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
     ) -> bool:
         """
         Common pick logic for pick_up, unstack, and remove_beside.
@@ -383,6 +593,7 @@ class BlockPrimitives:
             observations: Current world state
             action_desc: Description for logging (e.g., "Picking", "Unstacking")
             block_transform: Optional 4x4 transform of block in base frame (for orientation)
+            target_orientation: Target yaw for placement (optional, for cover action)
 
         Returns:
             True if successful
@@ -394,8 +605,8 @@ class BlockPrimitives:
 
         x, y, z = block[2], block[3], block[4]
 
-        # Compute grasp orientation based on block pose
-        grasp_orientation = self._compute_grasp_orientation(block_id, block_transform)
+        # Compute grasp orientation based on block pose (with optional target for cover)
+        grasp_orientation = self._compute_grasp_orientation(block_id, block_transform, target_orientation)
 
         # Log orientation info
         if block_transform is not None:
@@ -411,6 +622,10 @@ class BlockPrimitives:
         grasp_pos = np.array([x, y, grasp_z])
 
         # Execute pick sequence
+        # First ensure we're at safe height to avoid low traversal paths
+        if not self._ensure_safe_height():
+            return False
+
         self._open_gripper()
 
         # Move to approach (with computed orientation)
@@ -436,7 +651,8 @@ class BlockPrimitives:
         table_id: int,
         robot_id: int,
         observations: List[List],
-        block_transform: Optional[np.ndarray] = None
+        block_transform: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
     ) -> bool:
         """
         Pick up a block from the table.
@@ -449,11 +665,12 @@ class BlockPrimitives:
             robot_id: ID of robot (unused, for PDDL compatibility)
             observations: Current world state
             block_transform: Optional 4x4 transform for grasp orientation
+            target_orientation: Target yaw for placement (optional, for cover action)
 
         Returns:
             True if successful
         """
-        success = self._pick_block(block_id, observations, f"Picking block {block_id}", block_transform)
+        success = self._pick_block(block_id, observations, f"Picking block {block_id}", block_transform, target_orientation)
         if success:
             print(f"Picked block {block_id}")
         return success
@@ -464,7 +681,8 @@ class BlockPrimitives:
         under_block_id: int,
         robot_id: int,
         observations: List[List],
-        block_transform: Optional[np.ndarray] = None
+        block_transform: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
     ) -> bool:
         """
         Unstack a block from on top of another block.
@@ -477,6 +695,7 @@ class BlockPrimitives:
             robot_id: ID of robot (unused, for PDDL compatibility)
             observations: Current world state
             block_transform: Optional 4x4 transform for grasp orientation
+            target_orientation: Target yaw for placement (optional, for cover action)
 
         Returns:
             True if successful
@@ -484,7 +703,7 @@ class BlockPrimitives:
         success = self._pick_block(
             block_id, observations,
             f"Unstacking block {block_id} from block {under_block_id}",
-            block_transform
+            block_transform, target_orientation
         )
         if success:
             print(f"Unstacked block {block_id}")
@@ -497,7 +716,8 @@ class BlockPrimitives:
         table_id: int,
         robot_id: int,
         observations: List[List],
-        block_transform: Optional[np.ndarray] = None
+        block_transform: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
     ) -> bool:
         """
         Pick up a block that is beside another block.
@@ -511,6 +731,7 @@ class BlockPrimitives:
             robot_id: ID of robot (unused)
             observations: Current world state
             block_transform: Optional 4x4 transform for grasp orientation
+            target_orientation: Target yaw for placement (optional, for cover action)
 
         Returns:
             True if successful
@@ -518,10 +739,46 @@ class BlockPrimitives:
         success = self._pick_block(
             block_id, observations,
             f"Removing block {block_id} from beside block {beside_block_id}",
-            block_transform
+            block_transform, target_orientation
         )
         if success:
             print(f"Removed block {block_id} from beside")
+        return success
+
+    def pick_floating(
+        self,
+        block_id: int,
+        robot_id: int,
+        observations: List[List],
+        block_transform: Optional[np.ndarray] = None,
+        target_orientation: Optional[float] = None
+    ) -> bool:
+        """
+        Pick up a floating block (perception error recovery).
+
+        PDDL action: (pick_floating ?b1 ?r1)
+
+        Floating blocks are blocks that are neither on-table nor above anything,
+        typically due to perception errors. This action picks them up so they
+        can be released to a valid position on the table.
+
+        Args:
+            block_id: ID of block to pick
+            robot_id: ID of robot (unused, for PDDL compatibility)
+            observations: Current world state
+            block_transform: Optional 4x4 transform for grasp orientation
+            target_orientation: Target yaw for placement (optional, for cover action)
+
+        Returns:
+            True if successful
+        """
+        success = self._pick_block(
+            block_id, observations,
+            f"Picking floating block {block_id}",
+            block_transform, target_orientation
+        )
+        if success:
+            print(f"Picked floating block {block_id}")
         return success
 
     def put_down(
@@ -555,35 +812,65 @@ class BlockPrimitives:
         # Target position (tz is already the top of target block)
         tx, ty, tz = target[2], target[3], target[4]
 
+        # Determine orientation reference block
+        # For planks placed on non-planks, look for a reference plank below in the stack
+        block_class = block[1]
+        target_class = target[1]
+        reference_block = target
+        reference_id = target_id
+
+        if block_class == 3 and target_class != 3:
+            # Placing plank on non-plank - look for reference plank below
+            ref_plank = self._find_reference_plank_below(tx, ty, tz, observations)
+            if ref_plank is not None:
+                reference_block = ref_plank
+                reference_id = ref_plank[0]
+                print(f"  [Reference] Using plank {reference_id} below for orientation")
+
+        # Get reference yaw for alignment - place block with long axis parallel to reference
+        reference_yaw = reference_block[8] if len(reference_block) > 8 else 0.0
+
+        # Correct for different aspect ratios: if blocks have different long axis directions,
+        # we need to offset the yaw so their long axes end up parallel
+        # Long axis offset: 0 if X is long, π/2 if Y is long
+        placed_long_axis = self._get_long_axis_offset(block_id)
+        reference_long_axis = self._get_long_axis_offset(reference_id)
+        axis_correction = placed_long_axis - reference_long_axis
+        corrected_yaw = reference_yaw - axis_correction
+
+        # Compensate for grasp offset: block's final yaw = gripper_yaw - grasp_offset
+        # So gripper_yaw = corrected_yaw + grasp_offset to achieve final_yaw = corrected_yaw
+        grasp_angles = self.grasp_orientations.get(block_id, [0.0])
+        grasp_offset = grasp_angles[0] if isinstance(grasp_angles, list) else grasp_angles
+        gripper_yaw = corrected_yaw + grasp_offset
+        place_orientation = self._compute_place_orientation(gripper_yaw)
+
         # Held block dimensions
         bh = block[7]
 
-        # Place position: on top of target
-        # tz is already the top of target block (marker position)
-        # Block is held with grasp at grasp_depth below its top, so:
-        #   block_bottom = fingertips_z + grasp_depth - bh
-        # We want block_bottom = tz + clearance, so:
-        #   fingertips_z = tz + clearance + bh - grasp_depth
-        place_z = tz + bh - self.grasp_depth + self.place_clearance + self.gripper_z_offset
+        # Approach position: above target at approach_height
+        # Use target Z + block height as reference for approach
+        approach_z = tz + bh + self.approach_height + self.gripper_z_offset
+        approach_pos = np.array([tx, ty, approach_z])
 
-        approach_pos = np.array([tx, ty, place_z + self.approach_height])
-        place_pos = np.array([tx, ty, place_z])
+        print(f"Placing block {block_id} on block {target_id} "
+              f"(ref={reference_id}, ref_yaw={np.degrees(reference_yaw):.1f}°, axis_corr={np.degrees(axis_correction):.1f}°, "
+              f"grasp_offset={np.degrees(grasp_offset):.1f}°, gripper_yaw={np.degrees(gripper_yaw):.1f}°)")
 
-        print(f"Placing block {block_id} on block {target_id} at [{tx:.3f}, {ty:.3f}, {place_z - self.gripper_z_offset:.3f}]")
-
-        # Move to approach
-        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+        # Move to approach with target orientation
+        if not self._move_to_pose(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
-        # Move down to place
-        if not self._move_linear(self._pose_to_list(place_pos)):
-            return False
+        # Move down until contact detected
+        print(f"  Moving down until contact...")
+        if not self._move_until_contact():
+            print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
         self._open_gripper()
 
-        # Retract
-        if not self._move_linear(self._pose_to_list(approach_pos)):
+        # Retract (maintain orientation)
+        if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
         print(f"Placed block {block_id} on block {target_id}")
@@ -622,38 +909,65 @@ class BlockPrimitives:
 
         # Target position
         tx, ty, tz = target[2], target[3], target[4]
-        tl = target[6]  # target length (for Y offset)
+        tl = target[6]  # target length (for offset)
+
+        # Get target yaw for alignment - place block with long axis parallel to target's long axis
+        target_yaw = target[8] if len(target) > 8 else 0.0
+
+        # Correct for different aspect ratios: if blocks have different long axis directions,
+        # we need to offset the yaw so their long axes end up parallel
+        # Long axis offset: 0 if X is long, π/2 if Y is long
+        placed_long_axis = self._get_long_axis_offset(block_id)
+        target_long_axis = self._get_long_axis_offset(target_id)
+        axis_correction = placed_long_axis - target_long_axis
+        corrected_yaw = target_yaw - axis_correction
+
+        # Compensate for grasp offset: block's final yaw = gripper_yaw - grasp_offset
+        # So gripper_yaw = corrected_yaw + grasp_offset to achieve final_yaw = corrected_yaw
+        grasp_angles = self.grasp_orientations.get(block_id, [0.0])
+        grasp_offset = grasp_angles[0] if isinstance(grasp_angles, list) else grasp_angles
+        gripper_yaw = corrected_yaw + grasp_offset
+        place_orientation = self._compute_place_orientation(gripper_yaw)
 
         # Held block dimensions
         bl = block[6]  # block length
         bh = block[7]  # block height
 
-        # Place beside: offset in Y direction
-        place_x = tx
-        place_y = ty + tl / 2 + bl / 2 + self.beside_gap
+        # Place beside: offset perpendicular to target's orientation
+        # offset_dist = half of target length + half of block length + gap
+        offset_dist = tl / 2 + bl / 2 + self.beside_gap
+
+        # Offset in direction perpendicular to target yaw (use original target_yaw for position)
+        # yaw=0 means facing +X, so perpendicular is +Y
+        # For a yaw of θ, perpendicular direction is (sin(θ), -cos(θ)) rotated 90°
+        # Actually: perpendicular to yaw direction is (-sin(yaw), cos(yaw))
+        place_x = tx - offset_dist * np.sin(target_yaw)
+        place_y = ty + offset_dist * np.cos(target_yaw)
+
         table_z = table[4] if table else 0.0
-        # Block is held with grasp at grasp_depth below its top
-        # We want block_bottom = table_z + clearance
-        place_z = table_z + bh - self.grasp_depth + self.place_clearance + self.gripper_z_offset
 
-        approach_pos = np.array([place_x, place_y, place_z + self.approach_height])
-        place_pos = np.array([place_x, place_y, place_z])
+        # Approach position: above table at approach_height
+        approach_z = table_z + bh + self.approach_height + self.gripper_z_offset
+        approach_pos = np.array([place_x, place_y, approach_z])
 
-        print(f"Aligning block {block_id} beside block {target_id}")
+        print(f"Aligning block {block_id} beside block {target_id} "
+              f"(target_yaw={np.degrees(target_yaw):.1f}°, axis_corr={np.degrees(axis_correction):.1f}°, "
+              f"grasp_offset={np.degrees(grasp_offset):.1f}°, gripper_yaw={np.degrees(gripper_yaw):.1f}°)")
 
-        # Move to approach
-        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+        # Move to approach with target orientation
+        if not self._move_to_pose(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
-        # Move down to place
-        if not self._move_linear(self._pose_to_list(place_pos)):
-            return False
+        # Move down until contact detected
+        print(f"  Moving down until contact...")
+        if not self._move_until_contact():
+            print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
         self._open_gripper()
 
-        # Retract
-        if not self._move_linear(self._pose_to_list(approach_pos)):
+        # Retract (maintain orientation)
+        if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
         print(f"Aligned block {block_id} beside block {target_id}")
@@ -694,6 +1008,15 @@ class BlockPrimitives:
         lx, ly, lz = left[2], left[3], left[4]
         rx, ry, rz = right[2], right[3], right[4]
 
+        # Compute plank orientation from pillar positions
+        # Plank's long axis should be parallel to the line connecting pillars
+        # Gripper grasps along short side, so gripper yaw = pillar_angle + 90°
+        dx = rx - lx
+        dy = ry - ly
+        pillar_angle = np.arctan2(dy, dx)
+        gripper_yaw = pillar_angle + np.pi / 2  # Perpendicular to pillar line
+        place_orientation = self._compute_place_orientation(gripper_yaw)
+
         # Plank dimensions
         ph = plank[7]
 
@@ -702,32 +1025,83 @@ class BlockPrimitives:
         place_y = (ly + ry) / 2
         # lz, rz are already pillar tops (marker positions)
         pillar_top = max(lz, rz)
-        # Plank is held with grasp at grasp_depth below its top
-        # We want plank_bottom = pillar_top + clearance
-        place_z = pillar_top + ph - self.grasp_depth + self.place_clearance + self.gripper_z_offset
 
-        approach_pos = np.array([place_x, place_y, place_z + self.approach_height])
-        place_pos = np.array([place_x, place_y, place_z])
+        # Approach position: above pillars at approach_height
+        approach_z = pillar_top + ph + self.approach_height + self.gripper_z_offset
+        approach_pos = np.array([place_x, place_y, approach_z])
 
-        print(f"Covering pillars {left_id}, {right_id} with plank {plank_id}")
+        print(f"Covering pillars {left_id}, {right_id} with plank {plank_id} "
+              f"(pillar_angle={np.degrees(pillar_angle):.1f}°, gripper_yaw={np.degrees(gripper_yaw):.1f}°)")
 
-        # Move to approach
-        if not self._move_to_pose(self._pose_to_list(approach_pos)):
+        # Move to approach with plank orientation
+        if not self._move_to_pose(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
-        # Move down to place
-        if not self._move_linear(self._pose_to_list(place_pos)):
-            return False
+        # Move down until contact detected
+        print(f"  Moving down until contact...")
+        if not self._move_until_contact():
+            print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
         self._open_gripper()
 
-        # Retract
-        if not self._move_linear(self._pose_to_list(approach_pos)):
+        # Retract (maintain orientation)
+        if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
             return False
 
         print(f"Covered with plank {plank_id}")
         return True
+
+    def _point_in_rounded_rect(
+        self,
+        px: float, py: float,
+        rect_x: float, rect_y: float,
+        rect_w: float, rect_l: float,
+        rect_yaw: float,
+        radius: float
+    ) -> bool:
+        """
+        Check if point (px, py) is inside a rounded rectangle.
+
+        The rounded rectangle is centered at (rect_x, rect_y), has dimensions
+        rect_w × rect_l, is rotated by rect_yaw, and has corner radius = radius.
+
+        This represents the Minkowski sum of the rectangle with a circle of given radius.
+
+        Args:
+            px, py: Point to test
+            rect_x, rect_y: Center of rectangle
+            rect_w, rect_l: Width and length of rectangle
+            rect_yaw: Rotation angle of rectangle (radians)
+            radius: Inflation radius (corner radius)
+
+        Returns:
+            True if point is inside the rounded rectangle
+        """
+        # Transform point into rectangle's local coordinate frame
+        dx = px - rect_x
+        dy = py - rect_y
+        cos_yaw = np.cos(-rect_yaw)
+        sin_yaw = np.sin(-rect_yaw)
+        local_x = dx * cos_yaw - dy * sin_yaw
+        local_y = dx * sin_yaw + dy * cos_yaw
+
+        # Half-dimensions of the inner rectangle (before inflation)
+        half_w = rect_w / 2
+        half_l = rect_l / 2
+
+        # Check if inside the inflated rounded rectangle
+        # This is equivalent to checking distance to the original rectangle
+
+        # Clamp to rectangle bounds to find nearest point on rectangle edge
+        nearest_x = max(-half_w, min(half_w, local_x))
+        nearest_y = max(-half_l, min(half_l, local_y))
+
+        # Distance from point to nearest point on rectangle
+        dist_sq = (local_x - nearest_x) ** 2 + (local_y - nearest_y) ** 2
+
+        # Inside if distance < radius (or inside the rectangle itself)
+        return dist_sq < radius ** 2
 
     def release(
         self,
@@ -765,18 +1139,19 @@ class BlockPrimitives:
         # Get table Z (surface height)
         table_z = table[4] if table else 0.0
 
-        # Find empty spot: collect positions and sizes of all other blocks on table
+        # Find empty spot: collect positions, sizes, and yaw of all other blocks on table
         other_blocks = []
         for obs in observations:
             if obs[0] != block_id and obs[1] in [2, 3]:  # Other cubes/planks
-                # Store position and size: (x, y, width, length)
-                other_blocks.append((obs[2], obs[3], obs[5], obs[6]))
+                # Store position, size, and yaw: (x, y, width, length, yaw)
+                yaw = float(obs[8]) if len(obs) > 8 else 0.0
+                other_blocks.append((obs[2], obs[3], obs[5], obs[6], yaw))
 
         # Calculate center of existing blocks as base
         tb = self.table_bounds
         if other_blocks:
-            avg_x = sum(x for x, y, w, l in other_blocks) / len(other_blocks)
-            avg_y = sum(y for x, y, w, l in other_blocks) / len(other_blocks)
+            avg_x = sum(x for x, y, w, l, yaw in other_blocks) / len(other_blocks)
+            avg_y = sum(y for x, y, w, l, yaw in other_blocks) / len(other_blocks)
         else:
             avg_x = (tb['x_min'] + tb['x_max']) / 2
             avg_y = (tb['y_min'] + tb['y_max']) / 2
@@ -786,13 +1161,17 @@ class BlockPrimitives:
         place_x, place_y = avg_x, avg_y
         found = False
 
-        # Search offsets: start close, move outward
+        # Inflation radius for collision detection (1/4 of original to prevent beside after release)
+        inflation = (self.release_min_dist + max(bw, bl) / 2) / 4
+
+        # Search offsets: start far, move inward (places blocks far from cluster)
         offsets = []
-        for r in [self.release_min_dist, self.release_min_dist * 1.5,
-                  self.release_min_dist * 2, self.release_min_dist * 2.5,
-                  self.release_min_dist * 3, self.release_min_dist * 4]:
-            for angle_idx in range(8):  # 8 directions
-                angle = angle_idx * (np.pi / 4)  # 45 degree increments
+        for r in [self.release_min_dist * 5, self.release_min_dist * 4,
+                  self.release_min_dist * 3, self.release_min_dist * 2.5,
+                  self.release_min_dist * 2, self.release_min_dist * 1.5,
+                  self.release_min_dist, self.release_min_dist * 0.5]:
+            for angle_idx in range(12):  # 12 directions (30 degree increments)
+                angle = angle_idx * (np.pi / 6)
                 dx = r * np.cos(angle)
                 dy = r * np.sin(angle)
                 offsets.append((dx, dy))
@@ -808,14 +1187,14 @@ class BlockPrimitives:
                     tb['y_min'] + margin_y < candidate_y < tb['y_max'] - margin_y):
                 continue
 
-            # Check if far enough from all other blocks using actual block sizes
+            # Check if far enough from all other blocks using rounded rectangle collision
             is_empty = True
-            for (ox, oy, ow, ol) in other_blocks:
-                # Minimum distance = half of each block's size + safety margin
-                min_dist_x = (bw + ow) / 2 + 0.05  # 5cm safety margin (larger for safe release)
-                min_dist_y = (bl + ol) / 2 + 0.05
-                # Use axis-aligned bounding box collision check
-                if abs(candidate_x - ox) < min_dist_x and abs(candidate_y - oy) < min_dist_y:
+            for (ox, oy, ow, ol, oyaw) in other_blocks:
+                if self._point_in_rounded_rect(
+                    candidate_x, candidate_y,
+                    ox, oy, ow, ol, oyaw,
+                    inflation
+                ):
                     is_empty = False
                     break
 
@@ -825,18 +1204,17 @@ class BlockPrimitives:
                 break
 
         if not found:
-            # Fallback: place at offset from center (further out)
-            place_x = avg_x + self.release_min_dist * 3
-            place_y = avg_y
-            print(f"  [Release] Warning: No ideal spot found, using fallback position")
+            # No valid spot found - return to home position while keeping block held
+            print(f"  [Release] WARNING: No empty spot found for block {block_id}")
+            print(f"    Table bounds: x=[{tb['x_min']:.2f}, {tb['x_max']:.2f}], y=[{tb['y_min']:.2f}, {tb['y_max']:.2f}]")
+            print(f"    Other blocks: {len(other_blocks)}, cluster center: ({avg_x:.3f}, {avg_y:.3f})")
+            print(f"  [Release] Returning to home position while keeping block held...")
+            self._move_to_home()
+            return False
 
-        # Place position on table
-        # Block is held with grasp at grasp_depth below its top
-        # We want block_bottom = table_z + clearance
-        place_z = table_z + bh - self.grasp_depth + self.place_clearance + self.gripper_z_offset
-
-        approach_pos = np.array([place_x, place_y, place_z + self.approach_height])
-        place_pos = np.array([place_x, place_y, place_z])
+        # Approach position: above table at approach_height
+        approach_z = table_z + bh + self.approach_height + self.gripper_z_offset
+        approach_pos = np.array([place_x, place_y, approach_z])
 
         print(f"Releasing block {block_id} to empty spot at [{place_x:.3f}, {place_y:.3f}]")
 
@@ -844,9 +1222,10 @@ class BlockPrimitives:
         if not self._move_to_pose(self._pose_to_list(approach_pos)):
             return False
 
-        # Move down to place
-        if not self._move_linear(self._pose_to_list(place_pos)):
-            return False
+        # Move down until contact detected
+        print(f"  Moving down until contact...")
+        if not self._move_until_contact():
+            print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
         self._open_gripper()
@@ -858,6 +1237,60 @@ class BlockPrimitives:
         print(f"Released block {block_id} on table")
         return True
 
+    def rotate(
+        self,
+        block_id: int,
+        target_id: int,
+        robot_id: int,
+        observations: List[List],
+        block_transforms: Optional[Dict[int, np.ndarray]] = None
+    ) -> bool:
+        """
+        Rotate held block to align with target block orientation.
+
+        PDDL action: (rotate ?b1 ?b2 ?r1)
+
+        This action rotates the gripper (with held block) in place to match
+        the target block's orientation. Used before place actions when
+        alignment is required.
+
+        Args:
+            block_id: ID of held block
+            target_id: ID of target block to align with
+            robot_id: ID of robot (unused)
+            observations: Current world state
+            block_transforms: Optional dict mapping block_id to 4x4 transform
+
+        Returns:
+            True if successful
+        """
+        target = self._get_block_from_obs(target_id, observations)
+        if target is None:
+            print(f"Target block {target_id} not found")
+            return False
+
+        # Get target yaw from observations
+        target_yaw = target[8] if len(target) > 8 else 0.0
+
+        # Compute target gripper orientation
+        target_orientation = self._compute_place_orientation(target_yaw)
+
+        # Get current gripper position
+        current_pose = self.rtde_r.getActualTCPPose()
+        current_pos = np.array(current_pose[:3])
+
+        # Rotate in place (move to same position with new orientation)
+        pose = self._pose_to_list(current_pos, target_orientation)
+
+        print(f"Rotating held block {block_id} to align with block {target_id} "
+              f"(target_yaw={np.degrees(target_yaw):.1f}°)")
+
+        if not self._move_to_pose(pose):
+            return False
+
+        print(f"Rotated block {block_id} to match orientation of block {target_id}")
+        return True
+
     # =========================================================================
     # Action Dispatcher
     # =========================================================================
@@ -867,7 +1300,8 @@ class BlockPrimitives:
         action_name: str,
         args: Tuple,
         observations: List[List],
-        block_transforms: Optional[Dict[int, np.ndarray]] = None
+        block_transforms: Optional[Dict[int, np.ndarray]] = None,
+        next_action: Optional[Tuple[str, Tuple]] = None
     ) -> bool:
         """
         Execute a PDDL action.
@@ -877,6 +1311,7 @@ class BlockPrimitives:
             args: Action arguments as tuple of string IDs
             observations: Current world state
             block_transforms: Optional dict mapping block_id to 4x4 transform (for grasp orientation)
+            next_action: Optional tuple (action_name, args) for lookahead (to compute target orientation)
 
         Returns:
             True if successful
@@ -889,14 +1324,81 @@ class BlockPrimitives:
         if block_transforms is not None and len(int_args) > 0:
             block_transform = block_transforms.get(int_args[0])
 
+        # Compute target_orientation for pick actions based on next action lookahead
+        target_orientation = None
+        if next_action:
+            next_name = next_action[0]
+            next_args = [int(a) for a in next_action[1]]
+
+            if next_name == 'cover':
+                # cover args: (plank_id, left_id, right_id, robot_id)
+                if len(next_args) >= 3:
+                    left_id, right_id = next_args[1], next_args[2]
+                    left = self._get_block_from_obs(left_id, observations)
+                    right = self._get_block_from_obs(right_id, observations)
+                    if left is not None and right is not None:
+                        dx = right[2] - left[2]
+                        dy = right[3] - left[3]
+                        pillar_angle = np.arctan2(dy, dx)
+                        # Add 90° because gripper grasps plank along short side,
+                        # so gripper yaw should be perpendicular to pillar line
+                        # for plank's long axis to be parallel to pillar line
+                        target_orientation = pillar_angle + np.pi / 2
+                        print(f"  [Cover lookahead] Pillars at ({left[2]:.3f},{left[3]:.3f}) and ({right[2]:.3f},{right[3]:.3f})")
+                        print(f"  [Cover lookahead] Pillar angle: {np.degrees(pillar_angle):.1f}°, gripper target: {np.degrees(target_orientation):.1f}°")
+
+            elif next_name in ['align', 'put-down']:
+                # align args: (moving_id, target_id, robot_id)
+                # put-down args: (block_id, target_id, robot_id)
+                # Placement uses gripper_yaw = (ref_yaw - axis_correction) + grasp_offset
+                # So lookahead should match this expected gripper_yaw
+                if len(next_args) >= 2:
+                    target_block_id = next_args[1]  # args[1] is the target block
+                    target_block = self._get_block_from_obs(target_block_id, observations)
+                    if target_block is not None and len(target_block) > 8:
+                        pick_block_id = int_args[0]
+                        pick_block = self._get_block_from_obs(pick_block_id, observations)
+
+                        # Determine reference block for orientation
+                        reference_block = target_block
+                        reference_id = target_block_id
+
+                        # For put-down: if placing plank on non-plank, look for reference plank below
+                        if (next_name == 'put-down' and pick_block is not None and
+                            pick_block[1] == 3 and target_block[1] != 3):
+                            tx, ty, tz = target_block[2], target_block[3], target_block[4]
+                            ref_plank = self._find_reference_plank_below(tx, ty, tz, observations)
+                            if ref_plank is not None:
+                                reference_block = ref_plank
+                                reference_id = ref_plank[0]
+                                print(f"  [Lookahead] Using plank {reference_id} below for orientation")
+
+                        reference_yaw = float(reference_block[8])
+
+                        # Axis correction for different aspect ratios (parallel long axes)
+                        placed_long_axis = self._get_long_axis_offset(pick_block_id)
+                        reference_long_axis = self._get_long_axis_offset(reference_id)
+                        axis_correction = placed_long_axis - reference_long_axis
+                        corrected_yaw = reference_yaw - axis_correction
+
+                        # Add grasp offset of block being picked
+                        grasp_angles = self.grasp_orientations.get(pick_block_id, [0.0])
+                        grasp_offset = grasp_angles[0] if isinstance(grasp_angles, list) else grasp_angles
+                        target_orientation = corrected_yaw + grasp_offset
+                        print(f"  [Align/Put-down lookahead] ref={reference_id}, ref_yaw: {np.degrees(reference_yaw):.1f}°, "
+                              f"axis_corr: {np.degrees(axis_correction):.1f}°, "
+                              f"grasp_offset: {np.degrees(grasp_offset):.1f}°, gripper target: {np.degrees(target_orientation):.1f}°")
+
         action_map = {
-            'pick-up': lambda: self.pick_up(*int_args, observations, block_transform),
-            'unstack': lambda: self.unstack(*int_args, observations, block_transform),
-            'remove-beside': lambda: self.remove_beside(*int_args, observations, block_transform),
+            'pick-up': lambda: self.pick_up(*int_args, observations, block_transform, target_orientation),
+            'unstack': lambda: self.unstack(*int_args, observations, block_transform, target_orientation),
+            'remove-beside': lambda: self.remove_beside(*int_args, observations, block_transform, target_orientation),
+            'pick_floating': lambda: self.pick_floating(*int_args, observations, block_transform, target_orientation),
             'put-down': lambda: self.put_down(*int_args, observations),
             'align': lambda: self.align(*int_args, observations),
             'cover': lambda: self.cover(*int_args, observations),
             'release': lambda: self.release(*int_args, observations),
+            'rotate': lambda: self.rotate(*int_args, observations, block_transforms),
         }
 
         if action_name not in action_map:

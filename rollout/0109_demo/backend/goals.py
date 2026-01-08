@@ -12,6 +12,7 @@ from typing import Dict, List, Tuple, Optional
 #   - above(block1, block2) - block1 is directly above block2
 #   - beside(block1, block2) - block1 is beside block2
 #   - above_both(block, block1, block2) - block spans above both block1 and block2
+#   - top(block) - block is at the top of a stack (nothing above it)
 
 GOAL_LIBRARY: Dict[str, Dict] = {
     # Bridge: two pillars with blocks stacked, then plank on top
@@ -20,8 +21,9 @@ GOAL_LIBRARY: Dict[str, Dict] = {
         'predicates': [
             ('on-table', '1', '9'), ('on-table', '2', '9'),
             ('beside', '2', '1'),
-            ('above', '5', '1'), ('above', '7', '2'),
-            ('above_both', '6', '5', '7'),
+            ('above', '0', '1'), ('above', '3', '2'),
+            ('above_both', '6', '0', '3'),
+            ('top', '6'),  # Plank 6 is on top
         ]
     },
     # Tall bridge: double-height pillars
@@ -32,7 +34,8 @@ GOAL_LIBRARY: Dict[str, Dict] = {
             ('beside', '2', '1'),
             ('above', '0', '1'), ('above', '3', '2'),
             ('above', '7', '0'), ('above', '5', '3'),
-            ('above_both', '6', '7', '5'),
+            ('above_both', '6', '5', '7'),
+            ('top', '6'),  # Plank 6 is on top
         ]
     },
     # Simple tower: stack of blocks
@@ -43,16 +46,17 @@ GOAL_LIBRARY: Dict[str, Dict] = {
             ('above', '1', '0'),
             ('above', '2', '1'),
             ('above', '3', '2'),
+            ('top', '3'),  # Block 3 is on top
         ]
     },
-    # CN Tower: tall stack
-    'cn_tower': {
-        'description': 'Build a tall tower (CN Tower)',
+    # Totem pole: tall stack
+    'totem_pole': {
+        'description': 'Build a totem pole (5-block tower)',
         'predicates': [
             ('on-table', '7', '9'),
             ('above', '1', '7'), ('above', '3', '1'),
-            ('above', '5', '3'), ('above', '6', '5'),
-            ('above', '0', '6'),
+            ('above', '6', '3'), ('above', '0', '6'),
+            ('top', '0'),  # Block 0 is on top
         ]
     },
     # House shape
@@ -64,6 +68,45 @@ GOAL_LIBRARY: Dict[str, Dict] = {
             ('above', '2', '3'), ('above', '1', '7'),
             ('above', '5', '1'), ('above', '0', '2'),
             ('above_both', '6', '0', '5'),
+            ('top', '6'),  # Plank 6 is on top
+        ]
+    },
+    # Chinese character: 土 (tu - earth/soil)
+    'tu': {
+        'description': 'Build Chinese character 土 (earth)',
+        'predicates': [
+            ('on-table', '4', '9'),
+            ('above', '7', '4'), ('above', '6', '7'),
+            ('above', '3', '6'),
+            ('top', '3'),  # Block 3 is on top
+        ]
+    },
+    # Chinese character: 干 (gan - dry/stem)
+    'gan': {
+        'description': 'Build Chinese character 干 (dry)',
+        'predicates': [
+            ('on-table', '7', '9'),
+            ('above', '4', '7'), ('above', '3', '4'),
+            ('above', '6', '3'),
+            ('top', '6'),  # Plank 6 is on top
+        ]
+    },
+    # Chinese character: 十 (shi - ten)
+    'shi': {
+        'description': 'Build Chinese character 十 (ten)',
+        'predicates': [
+            ('on-table', '7', '9'),
+            ('above', '4', '7'), ('above', '3', '4'),
+            ('top', '3'),  # Block 3 is on top - distinguishes from gan!
+        ]
+    },
+    # Boat shape
+    'boat': {
+        'description': 'Build a boat structure',
+        'predicates': [
+            ('on-table', '6', '9'),
+            ('above', '4', '6'), ('above', '3', '4'),
+            ('top', '3'),  # Block 3 is on top
         ]
     },
 }

@@ -173,10 +173,13 @@ class CommandBridge:
                 self._pending_goal_predicates = goal_predicates
 
             # Immediately update state so UI shows the goal
+            # Clear old plan when goal changes
             if goal_predicates is not None:
                 self.state_manager.update_state(
                     goal_name=goal_name,
-                    goal=goal_predicates
+                    goal=goal_predicates,
+                    current_plan=[],
+                    current_action_index=-1
                 )
 
                 # Recalculate goal satisfaction against current predicates

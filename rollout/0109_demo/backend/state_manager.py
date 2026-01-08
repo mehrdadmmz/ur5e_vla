@@ -354,7 +354,7 @@ class StateManager:
             goal_name="",
             goal_satisfied=False,
             unsatisfied_goals=[],
-            plan=[],
+            current_plan=[],
             current_action_index=-1,
             execution_status=ExecutionStatus.IDLE
         )

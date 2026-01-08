@@ -116,6 +116,7 @@ class ArucoMonitor:
         self.confidence: Dict[int, Dict] = {}   # marker_id -> {reproj_error, sharpness, confident}
         self.lock = threading.Lock()
         self._running = False
+        self._paused = False  # When paused, detection runs but poses aren't updated
         self._thread = None
 
         # Confidence thresholds
@@ -398,24 +399,29 @@ class ArucoMonitor:
         If a marker is not detected, keeps the previous position.
         Only updates positions for markers that are currently visible.
         Tracks which markers are currently visible vs using stale data.
+
+        When paused, detection runs (for visualization) but poses aren't updated.
+        This allows observations to only be captured at the observation position.
         """
         while self._running:
             poses_cam, conf_cam = self._detect_markers()
             current_time = time.time()
 
-            with self.lock:
-                # Track which markers are visible in this frame
-                self.currently_visible = set(poses_cam.keys())
+            # Skip pose updates when paused (detection still runs for visualization)
+            if not self._paused:
+                with self.lock:
+                    # Track which markers are visible in this frame
+                    self.currently_visible = set(poses_cam.keys())
 
-                # Update only the markers that were detected
-                # Keep previous positions for markers not currently visible
-                for marker_id, T_cam in poses_cam.items():
-                    T_base = self._transform_to_base(T_cam)
-                    self.latest_poses[marker_id] = T_base
-                    self.last_seen[marker_id] = current_time
-                    # Store confidence info
-                    if marker_id in conf_cam:
-                        self.confidence[marker_id] = conf_cam[marker_id]
+                    # Update only the markers that were detected
+                    # Keep previous positions for markers not currently visible
+                    for marker_id, T_cam in poses_cam.items():
+                        T_base = self._transform_to_base(T_cam)
+                        self.latest_poses[marker_id] = T_base
+                        self.last_seen[marker_id] = current_time
+                        # Store confidence info
+                        if marker_id in conf_cam:
+                            self.confidence[marker_id] = conf_cam[marker_id]
 
             time.sleep(1.0 / self.frequency)
 
@@ -436,6 +442,18 @@ class ArucoMonitor:
         if self.visual:
             cv2.destroyAllWindows()
         print("ArUco monitor stopped")
+
+    def pause(self):
+        """Pause pose updates. Detection continues but latest_poses won't be updated."""
+        self._paused = True
+
+    def resume(self):
+        """Resume pose updates."""
+        self._paused = False
+
+    def is_paused(self) -> bool:
+        """Check if monitor is paused."""
+        return self._paused
 
     def get_poses(self) -> Dict[int, np.ndarray]:
         """Get latest marker poses in base frame."""

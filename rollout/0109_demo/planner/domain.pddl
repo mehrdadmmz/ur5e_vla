@@ -13,6 +13,7 @@
     (on-table ?b1 ?t1)
     (above ?b1 ?b2)
     (above_both ?b1 ?b2 ?b3)
+    (floating ?b1)
 
     (not-hand_free ?r1)
     (not-holding ?b1 ?r1)
@@ -138,6 +139,21 @@
       )
   )
 
+  (:action rotate
+    :parameters (?b1 ?b2 ?r1)
+    :precondition
+      (and
+        (robot ?r1)
+        (box ?b1)
+        (box ?b2)
+        (holding ?b1 ?r1)
+      )
+    :effect
+      (and
+        (increase (total-cost) 10)
+      )
+  )
+
   (:action release
     :parameters (?b1 ?t1 ?r1)
     :precondition
@@ -215,6 +231,28 @@
         (not (beside ?b2 ?b1))
         (nothing_beside ?b1)
         (nothing_beside ?b2)
+      )
+  )
+
+  (:action pick_floating
+    :parameters (?b1 ?r1)
+    :precondition
+      (and
+        (robot ?r1)
+        (box ?b1)
+        (hand_free ?r1)
+        (floating ?b1)
+        (top ?b1)
+      )
+    :effect
+      (and
+        (increase (total-cost) 100)
+        (holding ?b1 ?r1)
+        (not (hand_free ?r1))
+        (not-hand_free ?r1)
+        (not (floating ?b1))
+        (not (top ?b1))
+        (not-top ?b1)
       )
   )
 )

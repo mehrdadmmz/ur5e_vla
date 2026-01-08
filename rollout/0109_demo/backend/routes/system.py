@@ -163,14 +163,25 @@ async def get_system_config():
     """
     robot_config = get_robot_config()
 
+    default_bounds = {"x_min": -0.3, "x_max": 0.3, "y_min": 0.3, "y_max": 0.7}
+    default_release_min_dist = 0.15
+
     if robot_config is None:
         # Return defaults if config not loaded yet
         return {
             "table_z": -0.15,
             "table_center_y": 0.5,
+            "table_bounds": default_bounds,
+            "release_min_dist": default_release_min_dist,
         }
+
+    # Extract release_min_dist from motion config
+    motion_config = robot_config.get("motion", {})
+    release_min_dist = motion_config.get("release_min_dist", default_release_min_dist)
 
     return {
         "table_z": robot_config.get("table_z", -0.15),
         "table_center_y": robot_config.get("table_center_y", 0.5),
+        "table_bounds": robot_config.get("table_bounds", default_bounds),
+        "release_min_dist": release_min_dist,
     }

@@ -12,6 +12,7 @@ Object format: [id, class, x, y, z, width, length, height]
 
 from typing import List, Tuple, Dict, Optional
 from collections import defaultdict
+import numpy as np
 
 
 # =============================================================================
@@ -20,10 +21,9 @@ from collections import defaultdict
 
 DEFAULT_THRESHOLDS = {
     'beside': {
-        'y_sep_min': 0.5,      # Min Y separation as fraction of combined length
-        'y_sep_max': 1.25,     # Max Y separation as fraction of combined length
-        'x_tolerance': 1.2,    # X alignment tolerance (multiplier of min width)
-        'z_tolerance': 1.2,    # Z alignment tolerance (multiplier of min height)
+        'dist_min': 0.8,       # Min horizontal distance as fraction of expected (allows slight overlap)
+        'dist_max': 1.5,       # Max horizontal distance as fraction of expected (allows gap)
+        'z_tolerance': 2.0,    # Z alignment tolerance (multiplier of min height)
     },
     'above': {
         'z_diff_min': 0.5,     # Min Z difference as fraction of top block height (loosened from 0.75)
@@ -32,6 +32,9 @@ DEFAULT_THRESHOLDS = {
     },
     'on_table': {
         'z_threshold': 1.4,    # Max Z above table as fraction of block height
+    },
+    'alignment': {
+        'yaw_tolerance': 0.15,  # Tolerance in radians (~8.6 degrees) for aligned detection
     },
 }
 
@@ -42,9 +45,111 @@ _thresholds = DEFAULT_THRESHOLDS.copy()
 def set_thresholds(thresholds: Dict):
     """Set predicate detection thresholds from config."""
     global _thresholds
-    for key in ['beside', 'above', 'on_table']:
+    for key in ['beside', 'above', 'on_table', 'alignment']:
         if key in thresholds:
+            if key not in _thresholds:
+                _thresholds[key] = {}
             _thresholds[key].update(thresholds[key])
+
+
+# =============================================================================
+# Alignment Utilities
+# =============================================================================
+
+def normalize_angle(angle: float) -> float:
+    """Normalize angle to [-pi, pi] range."""
+    while angle > np.pi:
+        angle -= 2 * np.pi
+    while angle < -np.pi:
+        angle += 2 * np.pi
+    return angle
+
+
+def get_long_axis_offset(width: float, length: float) -> float:
+    """
+    Get the angular offset of a block's long axis from its X-axis.
+
+    Args:
+        width: Block width (X dimension)
+        length: Block length (Y dimension)
+
+    Returns:
+        0.0 if X is longer (long axis along X), π/2 if Y is longer (long axis along Y)
+    """
+    if length > width:
+        return np.pi / 2
+    return 0.0
+
+
+def get_valid_alignments(class1: int, class2: int) -> List[float]:
+    """
+    Get valid relative yaw angles for alignment between block types.
+
+    Args:
+        class1: Block class (2=cube, 3=plank)
+        class2: Block class (2=cube, 3=plank)
+
+    Returns:
+        List of valid relative angles in radians.
+    """
+    if class1 == 2 and class2 == 2:
+        # Cube + Cube: 4 symmetric orientations (90-degree increments)
+        return [0.0, np.pi/2, np.pi, -np.pi/2]
+    elif class1 == 3 and class2 == 3:
+        # Plank + Plank: 2 orientations (parallel long axes)
+        # Note: actual check now uses long axis comparison, not raw yaw
+        return [0.0, np.pi]
+    else:
+        # Cube + Plank (either order): 4 orientations
+        return [0.0, np.pi/2, np.pi, -np.pi/2]
+
+
+def is_aligned(yaw1: float, yaw2: float, class1: int, class2: int,
+               yaw_tolerance: float = 0.15,
+               dims1: Tuple[float, float] = None,
+               dims2: Tuple[float, float] = None) -> bool:
+    """
+    Check if two blocks are aligned in orientation.
+
+    For planks (class 3), this checks if long axes are parallel, not raw yaw angles.
+    This handles planks with different aspect ratios (e.g., one with X long, one with Y long).
+
+    Args:
+        yaw1: Yaw angle of block 1 (radians)
+        yaw2: Yaw angle of block 2 (radians)
+        class1: Block class (2=cube, 3=plank)
+        class2: Block class (2=cube, 3=plank)
+        yaw_tolerance: Tolerance in radians (default ~8.6 degrees)
+        dims1: Optional (width, length) of block 1 for plank long-axis calculation
+        dims2: Optional (width, length) of block 2 for plank long-axis calculation
+
+    Returns:
+        True if blocks are aligned within tolerance
+    """
+    # For plank + plank, compare long axis angles (not raw yaw)
+    if class1 == 3 and class2 == 3 and dims1 is not None and dims2 is not None:
+        # Compute long axis angle for each plank
+        # Long axis angle = yaw + offset (0 if X is long, π/2 if Y is long)
+        long_axis1 = yaw1 + get_long_axis_offset(dims1[0], dims1[1])
+        long_axis2 = yaw2 + get_long_axis_offset(dims2[0], dims2[1])
+
+        # Long axes are parallel if they differ by 0° or 180°
+        relative_angle = normalize_angle(long_axis1 - long_axis2)
+        if abs(relative_angle) <= yaw_tolerance or abs(abs(relative_angle) - np.pi) <= yaw_tolerance:
+            return True
+        return False
+
+    # For other combinations, use raw yaw comparison
+    relative_yaw = normalize_angle(yaw1 - yaw2)
+
+    # Get valid alignment angles based on block type combination
+    valid_angles = get_valid_alignments(class1, class2)
+
+    # Check if relative_yaw matches any valid angle within tolerance
+    for angle in valid_angles:
+        if abs(normalize_angle(relative_yaw - angle)) <= yaw_tolerance:
+            return True
+    return False
 
 
 # =============================================================================
@@ -57,6 +162,7 @@ def get_beside(obj1: List, obj2: List, table_z: float = None) -> Optional[List[T
 
     Only applies to cube blocks (class 2).
     Both blocks must be on the table (not stacked) for beside to apply.
+    Blocks in an above/below relationship cannot be beside each other.
     Returns BOTH ('beside', id1, id2) AND ('beside', id2, id1) since beside is symmetric.
     Only returns predicates when obj1's id < obj2's id to avoid duplicates.
     """
@@ -82,11 +188,28 @@ def get_beside(obj1: List, obj2: List, table_z: float = None) -> Optional[List[T
         if z_diff1 >= h1 * t_on_table['z_threshold'] or z_diff2 >= h2 * t_on_table['z_threshold']:
             return None
 
-    # Check: Y separation is about one block width (absolute), X aligned, same height
-    y_sep = abs(y1 - y2)
-    if ((l1 + l2) * t['y_sep_min'] < y_sep < t['y_sep_max'] * (l1 + l2) and
-        abs(x1 - x2) < min(w1, w2) * t['x_tolerance'] and
-        abs(z1 - z2) < min(h1, h2) * t['z_tolerance']):
+    # Note: We no longer exclude beside based on above z_diff_min here.
+    # The filter_beside_by_above() function handles removing beside predicates
+    # when an actual 'above' relationship is detected, which is more accurate.
+    z_diff = abs(z1 - z2)
+    min_height = min(h1, h2)
+
+    # Check: Horizontal distance is approximately the sum of half-lengths (blocks touching)
+    # This is direction-agnostic - works for any orientation
+    horizontal_dist = np.sqrt((x1 - x2)**2 + (y1 - y2)**2)
+    expected_dist = (l1 + l2) / 2  # center-to-center distance when blocks are touching
+
+    if (expected_dist * t['dist_min'] < horizontal_dist < expected_dist * t['dist_max'] and
+        z_diff < min_height * t['z_tolerance']):
+
+        # Check yaw alignment (blocks must be oriented similarly)
+        yaw1 = obj1[8] if len(obj1) > 8 else 0.0
+        yaw2 = obj2[8] if len(obj2) > 8 else 0.0
+        yaw_tolerance = _thresholds.get('alignment', {}).get('yaw_tolerance', 0.15)
+
+        if not is_aligned(yaw1, yaw2, cls1, cls2, yaw_tolerance, (w1, l1), (w2, l2)):
+            return None  # Geometrically beside but not aligned in orientation
+
         # Return both directions since beside is symmetric
         return [('beside', str(id1), str(id2)), ('beside', str(id2), str(id1))]
 
@@ -135,6 +258,16 @@ def get_above(obj1: List, obj2: List, debug: bool = False) -> Optional[Tuple]:
     if (h1 * t['z_diff_min'] <= z_diff < h1 * t['z_diff_max'] and
         abs(y1 - y2) < xy_tol_y and
         abs(x1 - x2) < xy_tol_x):
+
+        # Check yaw alignment (stacked blocks must be oriented similarly)
+        # For planks, this checks long axis alignment (handles different aspect ratios)
+        yaw1 = obj1[8] if len(obj1) > 8 else 0.0
+        yaw2 = obj2[8] if len(obj2) > 8 else 0.0
+        yaw_tolerance = _thresholds.get('alignment', {}).get('yaw_tolerance', 0.15)
+
+        if not is_aligned(yaw1, yaw2, cls1, cls2, yaw_tolerance, (w1, l1), (w2, l2)):
+            return None  # Geometrically above but not aligned in orientation
+
         return ('above', str(id1), str(id2))
 
     return None
@@ -282,6 +415,33 @@ def get_nothing_beside_predicates(predicates: List[Tuple]) -> List[Tuple]:
     return alone
 
 
+def filter_beside_by_above(predicates: List[Tuple]) -> List[Tuple]:
+    """
+    Remove 'beside' predicates for pairs that have an 'above' relationship.
+
+    If above(A, B) or above(B, A) exists, then BOTH beside(A, B) and beside(B, A) must be removed.
+    """
+    # Collect all pairs with above relationship (as unordered pairs)
+    above_pairs = set()
+    for pred in predicates:
+        if pred[0] == 'above':
+            a, b = pred[1], pred[2]
+            # Store as frozenset so order doesn't matter
+            above_pairs.add(frozenset([a, b]))
+
+    # Filter out beside predicates for those pairs
+    filtered = []
+    for pred in predicates:
+        if pred[0] == 'beside':
+            a, b = pred[1], pred[2]
+            pair = frozenset([a, b])
+            if pair in above_pairs:
+                continue  # Skip - these objects have above relationship
+        filtered.append(pred)
+
+    return filtered
+
+
 def filter_above_by_stack(predicates: List[Tuple]) -> List[Tuple]:
     """
     Filter 'above' predicates to only keep direct (adjacent) stacking.
@@ -340,6 +500,91 @@ def clean_table_predicates(predicates: List[Tuple]) -> List[Tuple]:
     return cleaned
 
 
+def filter_predicates_for_held_blocks(predicates: List[Tuple]) -> List[Tuple]:
+    """
+    Remove position-based predicates for blocks that are currently being held.
+
+    When a block is held, its ArUco marker is occluded by the gripper, so
+    perception uses stale cached position data. This causes incorrect
+    position predicates (on-table, beside) to be generated.
+
+    Args:
+        predicates: Current predicates list
+
+    Returns:
+        Filtered predicates with position predicates removed for held blocks
+    """
+    # Collect held block IDs
+    held_ids = set()
+    for pred in predicates:
+        if pred[0] == 'holding':
+            held_ids.add(pred[1])
+
+    if not held_ids:
+        return predicates
+
+    # Filter out position predicates for held blocks
+    filtered = []
+    for pred in predicates:
+        if pred[0] == 'on-table' and pred[1] in held_ids:
+            continue  # Skip on-table for held blocks
+        if pred[0] == 'beside':
+            if pred[1] in held_ids or pred[2] in held_ids:
+                continue  # Skip beside if either block is held
+        if pred[0] == 'above' and pred[1] in held_ids:
+            continue  # Skip above for held blocks (held block can't be on top of anything)
+        filtered.append(pred)
+
+    return filtered
+
+
+def get_floating_predicates(predicates: List[Tuple]) -> List[Tuple]:
+    """
+    Detect floating blocks - blocks that are neither on-table nor above anything.
+
+    These are likely perception errors that need handling. The planner can use
+    pick_floating to recover by placing them back on the table.
+
+    Args:
+        predicates: Current predicates list
+
+    Returns:
+        List of ('floating', block_id) tuples for floating blocks
+    """
+    floating = []
+
+    # Get all box IDs
+    box_ids = set()
+    for pred in predicates:
+        if pred[0] == 'box':
+            box_ids.add(pred[1])
+
+    # Get blocks that are on-table
+    on_table_ids = set()
+    for pred in predicates:
+        if pred[0] == 'on-table':
+            on_table_ids.add(pred[1])
+
+    # Get blocks that are above something
+    above_ids = set()
+    for pred in predicates:
+        if pred[0] == 'above':
+            above_ids.add(pred[1])
+
+    # Get blocks that are being held
+    held_ids = set()
+    for pred in predicates:
+        if pred[0] == 'holding':
+            held_ids.add(pred[1])
+
+    # Floating = box but not on-table and not above anything and not held
+    for box_id in box_ids:
+        if box_id not in on_table_ids and box_id not in above_ids and box_id not in held_ids:
+            floating.append(('floating', box_id))
+
+    return floating
+
+
 def get_above_both(predicates: List[Tuple], observations: List[List]) -> List[Tuple]:
     """
     Convert double 'above' relations to 'above_both' for bridge planks.
@@ -367,8 +612,9 @@ def get_above_both(predicates: List[Tuple], observations: List[List]) -> List[Tu
 
         if obj_class == 3 and len(under_objs) == 2:
             # This is a bridge plank spanning two supports
-            sorted_under = sorted(under_objs[:2], key=int)
-            result.append(('above_both', top_obj, *sorted_under))
+            # Add both orderings: above_both(A, B, C) and above_both(A, C, B)
+            result.append(('above_both', top_obj, under_objs[0], under_objs[1]))
+            result.append(('above_both', top_obj, under_objs[1], under_objs[0]))
             # Also keep individual above relations
             for under_obj in under_objs:
                 result.append(('above', top_obj, under_obj))
@@ -446,6 +692,23 @@ def get_logical_state(observations: List[List], debug: bool = False) -> List[Tup
                     elif result not in predicates:
                         predicates.append(result)
 
+    # Ensure hand_free or holding is set for robot
+    # If gripper is closed but no holding detected, assume hand_free (anomalous but allows operation)
+    robot_obs = None
+    for obj in observations:
+        if obj[1] == 1:  # Robot class
+            robot_obs = obj
+            break
+
+    if robot_obs is not None:
+        robot_id = str(robot_obs[0])
+        has_hand_free = any(p[0] == 'hand_free' and p[1] == robot_id for p in predicates)
+        has_holding = any(p[0] == 'holding' and p[2] == robot_id for p in predicates)
+
+        if not has_hand_free and not has_holding:
+            # Gripper closed but not holding anything - add hand_free to allow operation
+            predicates.append(('hand_free', robot_id))
+
     # Derived predicates
     predicates.extend(get_top_predicates(predicates))
     predicates.extend(get_nothing_beside_predicates(predicates))
@@ -453,7 +716,14 @@ def get_logical_state(observations: List[List], debug: bool = False) -> List[Tup
     # Clean up
     predicates = clean_table_predicates(predicates)
     predicates = filter_above_by_stack(predicates)
+    predicates = filter_beside_by_above(predicates)  # Remove beside if above exists for same pair
     predicates = get_above_both(predicates, observations)
+
+    # Filter out stale position predicates for held blocks
+    predicates = filter_predicates_for_held_blocks(predicates)
+
+    # Detect floating blocks (perception error recovery)
+    predicates.extend(get_floating_predicates(predicates))
 
     return predicates
 
@@ -536,6 +806,16 @@ def apply_action_effects(state: List[Tuple], action_name: str, args: Tuple) -> L
         remove_pred(('on-table', b1, t1))
         remove_pred(('beside', b1, b2))
         remove_pred(('beside', b2, b1))
+
+    elif action_name == 'pick_floating':
+        # pick_floating(?b1, ?r1)
+        b1, r1 = args[0], args[1]
+        # Add effects
+        add_pred(('holding', b1, r1))
+        # Remove effects
+        remove_pred(('hand_free', r1))
+        remove_pred(('top', b1))
+        remove_pred(('floating', b1))
 
     # Note: place actions (align, put-down, cover, release) don't need
     # symbolic updates since we re-observe after them

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, ReactNode } from 'react';
+import { createContext, useContext, useReducer, ReactNode } from 'react';
 import {
   AppState,
   Block,
@@ -7,7 +7,6 @@ import {
   PlanAction,
   ExecutionStatus,
   LogEntry,
-  GripperState,
 } from '../types';
 
 // Block colors by state

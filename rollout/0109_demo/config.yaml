@@ -3,10 +3,11 @@
 
 robot:
   ip: "192.168.56.101"
-  speed: 0.3              # Joint speed (rad/s)
-  acceleration: 0.3       # Joint acceleration (rad/s^2)
+  speed: 0.7              # Joint speed (rad/s)
+  acceleration: 0.4       # Joint acceleration (rad/s^2)
   # Initial Cartesian pose [x, y, z, qx, qy, qz, qw] in meters and quaternion
   init_pose: [0.00, 0.50, 0.60, 1.0, 0.0, 0.0, 0.0]
+  # init_pose: [0.00, 0.2, 0.55, -0.9659258, 0, 0, 0.258819]
 
   # Joint limits [min, max] in radians for each joint (0-5)
   # Motions that would exceed these limits are rejected
@@ -24,7 +25,7 @@ gripper:
   # Measure this on your setup - typically 0.15-0.20m for Robotiq grippers
   z_offset: 0.25
   # Gripper positions (0=fully open, 255=fully closed)
-  open_pos: 100
+  open_pos: 120
   close_pos: 255
   # Gripper speed and force (0-255)
   speed: 100
@@ -40,6 +41,7 @@ gripper:
 camera:
   type: "wrist"            # "base" or "wrist"
   serial: "243322072780"  # camera serial
+  resolution: [1920, 1080]  # Camera resolution [width, height] - Full HD
 
   # For base camera: fixed transform from camera to robot base frame
   # Update this with your actual calibration!
@@ -68,32 +70,27 @@ aruco:
 
 motion:
   approach_height: 0.06   # Height above block for approach (meters)
-  grasp_depth: 0.01       # How deep to grasp below block top (meters)
+  grasp_depth: 0.025       # How deep to grasp below block top (meters)
+  safe_height: 0.45       # Min Z for traversal (meters) - ensures robot lifts before moving horizontally
   action_delay: 0.5       # Delay between motion steps (seconds)
   beside_gap: 0.025        # Gap between blocks when placing beside (meters) - for bridge bases
   place_clearance: 0.00  # Extra clearance when placing (meters)
   linear_speed_factor: 0.5  # Speed multiplier for linear moves (relative to joint speed)
   linear_acceleration: 0.1  # Acceleration for linear moves (m/s^2) - lower = slower/smoother
-  # Re-observation
-  hover_height: 0.15      # Height above block for re-observation (meters)
-  observation_wait: 0.5   # Wait for detection after moving (seconds)
   # Release action - finding empty spot on table
   release_min_dist: 0.15  # Minimum distance from other blocks (meters) - increased for safety
-
   # observe_world settings - ensures synchronized observations and logical state
   stability_wait: 1.0     # Wait for camera stabilization after moving (seconds)
-  # Extra viewpoints for better coverage (offsets from init_pose in meters [dx, dy, dz])
-  observe_viewpoints:
-    - [0.00, 0.00, 0.0]
-    # - [0.10, 0.10, 0.0]    # Right 
-    # - [0.0, 0.20, 0.0]    # Forward 
-    # - [-0.10, 0.10, 0.0]   # Left 
+  # Contact detection for placement - uses force feedback to detect surface
+  contact_speed: 0.05     # Speed for contact approach (m/s) - slow for safety
+  contact_acceleration: 0.5  # Acceleration for contact approach (m/s^2)
+  contact_retract: 0.0  # Retract distance after contact (meters) - reduces pressure on block
 
 # Table workspace bounds for release action
 table_bounds:
   x_min: -0.3
   x_max: 0.24
-  y_min: 0.4
+  y_min: 0.45
   y_max: 0.75
 
 # Object IDs
@@ -138,23 +135,26 @@ grasp_orientations:
   7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
 
 visual: true             # Show ArUco detection window
-debug_predicates: true   # Print debug info for predicate detection (positions, thresholds)
+# debug_predicates: true   # UNUSED - parameter not implemented, removed for cleanup
 
 # Predicate detection thresholds (multipliers relative to block dimensions)
 predicates:
   # 'beside' detection - blocks are horizontally adjacent
   beside:
-    y_sep_min: 0.0        # Min Y separation as fraction of combined length
-    y_sep_max: 1.5       # Max Y separation as fraction of combined length
-    x_tolerance: 0.5    # X alignment tolerance (multiplier of min width)
-    z_tolerance: 2.0      # Z alignment tolerance (multiplier of min height) - increased for detection variance
+    dist_min: 0.8         # Min horizontal distance as fraction of expected (allows slight overlap)
+    dist_max: 2.0         # Max horizontal distance as fraction of expected (accounts for beside_gap + variance)
+    z_tolerance: 2.0      # Z alignment tolerance (multiplier of min height)
 
   # 'above' detection - block is stacked on another
   above:
-    z_diff_min: 0.5      # Min Z difference as fraction of top block height
+    z_diff_min: 0.0      # Min Z difference as fraction of top block height
     z_diff_max: 1.5       # Max Z difference as fraction of top block height
     xy_tolerance: 0.3     # XY overlap tolerance (multiplier of max dimension)
 
   # 'on_table' detection - block is on table surface
   on_table:
-    z_threshold: 3.0      # Max Z above table as fraction of block height
+    z_threshold: 2.0      # Max Z above table as fraction of block height
+
+  # 'alignment' - orientation alignment detection for beside/above predicates
+  alignment:
+    yaw_tolerance: 0.30   # Tolerance in radians (~8.6 degrees) for blocks to be considered aligned

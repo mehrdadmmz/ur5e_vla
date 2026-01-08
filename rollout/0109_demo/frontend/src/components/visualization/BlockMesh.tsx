@@ -6,9 +6,16 @@ import { Block } from '../../types';
 
 interface BlockMeshProps {
   block: Block;
+  isBridge?: boolean;
+  isFloating?: boolean;
 }
 
-export function BlockMesh({ block }: BlockMeshProps) {
+// Bridge plank color (purple)
+const BRIDGE_COLOR = '#a855f7';
+// Floating block color (yellow) - perception error
+const FLOATING_COLOR = '#eab308';
+
+export function BlockMesh({ block, isBridge = false, isFloating = false }: BlockMeshProps) {
   const meshRef = useRef<Mesh>(null);
   // Coordinate mapping (right-handed): Robot X→Three.js X, Robot Y→Three.js -Z, Robot Z→Three.js Y
   const currentPos = useRef(
@@ -41,6 +48,9 @@ export function BlockMesh({ block }: BlockMeshProps) {
   // Determine opacity based on confidence
   const opacity = block.confident ? 1.0 : 0.6;
 
+  // Use special colors for bridge planks and floating blocks, otherwise use normal block color
+  const displayColor = isFloating ? FLOATING_COLOR : isBridge ? BRIDGE_COLOR : block.color;
+
   return (
     <group>
       <mesh
@@ -57,7 +67,7 @@ export function BlockMesh({ block }: BlockMeshProps) {
           args={[block.dimensions[0], block.dimensions[2], block.dimensions[1]]}
         />
         <meshStandardMaterial
-          color={block.color}
+          color={displayColor}
           metalness={0.1}
           roughness={0.8}
           transparent={!block.confident}

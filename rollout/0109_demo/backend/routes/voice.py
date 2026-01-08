@@ -11,18 +11,18 @@ import base64
 import tempfile
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import json
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
-    from ..state_manager import StateManager
+    from ..state_manager import StateManager, ExecutionStatus
     from ..command_bridge import CommandBridge, Command, CommandType
     from ..config import config
 except ImportError:
-    from state_manager import StateManager
+    from state_manager import StateManager, ExecutionStatus
     from command_bridge import CommandBridge, Command, CommandType
     from config import config
 
@@ -60,14 +60,15 @@ class TranscriptionResponse(BaseModel):
 
 class VoiceCommandResponse(BaseModel):
     transcript: str
-    command: Optional[str] = None
-    params: Optional[Dict[str, Any]] = None
+    commands: List[Dict[str, Any]] = []  # List of executed commands
     executed: bool = False
     message: str
 
 
 # LLM prompt for command parsing
-COMMAND_PARSE_SYSTEM_PROMPT = """You are a command parser for a robot block manipulation system. Parse the user's voice command into a structured action.
+COMMAND_PARSE_SYSTEM_PROMPT = """You are a command parser for a robot block manipulation system. Parse the user's voice command into structured actions.
+
+IMPORTANT: You can return MULTIPLE commands if the user requests multiple actions (e.g., "stop and build a bridge").
 
 Available commands:
 
@@ -88,34 +89,39 @@ Available commands:
    - "put-down" - place block on another (requires block_id)
    - "release" - release/drop held block
 
-Respond with JSON only. Format:
-{"command": "<command_type>", "params": {<parameters>}}
+Respond with JSON only. Return an array of commands:
+{"commands": [{"command": "<type>", "params": {...}}, ...]}
 
-For control commands: {"command": "pause", "params": {}}
-For goals: {"command": "set_goal", "params": {"goal_name": "bridge"}}
-For actions: {"command": "action", "params": {"action": "pick-up", "block_id": "5"}}
+Single command example:
+{"commands": [{"command": "pause", "params": {}}]}
 
-If the command is unclear or not related to robot control, respond:
-{"command": null, "params": {}}
+Multiple commands example:
+{"commands": [{"command": "pause", "params": {}}, {"command": "set_goal", "params": {"goal_name": "bridge"}}]}
+
+If the command is unclear or not related to robot control, return empty array:
+{"commands": []}
 
 Examples:
-- "stop the robot" -> {"command": "pause", "params": {}}
-- "build me a tower" -> {"command": "set_goal", "params": {"goal_name": "tower"}}
-- "grab block 3" -> {"command": "action", "params": {"action": "pick-up", "block_id": "3"}}
-- "make a house please" -> {"command": "set_goal", "params": {"goal_name": "house"}}
-- "what's the weather" -> {"command": null, "params": {}}
+- "stop the robot" -> {"commands": [{"command": "pause", "params": {}}]}
+- "build me a tower" -> {"commands": [{"command": "set_goal", "params": {"goal_name": "tower"}}]}
+- "stop and build a bridge" -> {"commands": [{"command": "pause", "params": {}}, {"command": "set_goal", "params": {"goal_name": "bridge"}}]}
+- "quit everything and make a house" -> {"commands": [{"command": "quit", "params": {}}, {"command": "set_goal", "params": {"goal_name": "house"}}]}
+- "grab block 3" -> {"commands": [{"command": "action", "params": {"action": "pick-up", "block_id": "3"}}]}
+- "what's the weather" -> {"commands": []}
+- "hello" -> {"commands": []}
 """
 
 
-async def parse_command(transcript: str) -> Optional[tuple]:
+async def parse_command(transcript: str) -> List[Dict[str, Any]]:
     """
-    Parse transcript into a command using LLM.
+    Parse transcript into commands using LLM.
 
     Returns:
-        Tuple of (command_type, params) or None if not recognized
+        List of command dicts, each with 'command' and 'params' keys.
+        Returns empty list if no commands recognized.
     """
     if not transcript or not transcript.strip():
-        return None
+        return []
 
     try:
         import openai
@@ -142,7 +148,7 @@ async def parse_command(transcript: str) -> Optional[tuple]:
                 {"role": "user", "content": transcript}
             ],
             temperature=0,
-            max_tokens=150
+            max_tokens=300
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -157,17 +163,18 @@ async def parse_command(transcript: str) -> Optional[tuple]:
 
         result = json.loads(result_text)
 
-        command = result.get("command")
-        params = result.get("params", {})
+        # Handle new format: {"commands": [...]}
+        commands = result.get("commands", [])
 
-        if command is None:
-            return None
+        # Backward compatibility: handle old format {"command": "...", "params": {...}}
+        if not commands and result.get("command"):
+            commands = [{"command": result["command"], "params": result.get("params", {})}]
 
-        return (command, params)
+        return commands
 
     except json.JSONDecodeError as e:
         print(f"[Voice] Failed to parse LLM response as JSON: {e}")
-        return None
+        return []
     except Exception as e:
         print(f"[Voice] LLM parsing error: {e}")
         raise HTTPException(status_code=500, detail=f"Command parsing failed: {e}")
@@ -221,6 +228,89 @@ async def transcribe_audio(audio_data: bytes, format: str = "wav") -> str:
 
 # Endpoints
 
+def execute_single_command(cmd: Dict[str, Any], command_bridge: CommandBridge) -> Dict[str, Any]:
+    """
+    Execute a single command and return result.
+
+    Returns dict with 'command', 'params', 'executed', 'message'.
+    """
+    cmd_type = cmd.get("command")
+    params = cmd.get("params", {})
+
+    result = {
+        "command": cmd_type,
+        "params": params,
+        "executed": True,
+        "message": ""
+    }
+
+    if cmd_type == "pause":
+        command_bridge.send_command(Command(CommandType.PAUSE))
+        result["message"] = "Pausing execution"
+
+    elif cmd_type == "continue":
+        command_bridge.send_command(Command(CommandType.CONTINUE))
+        result["message"] = "Continuing execution"
+
+    elif cmd_type == "quit":
+        command_bridge.send_command(Command(CommandType.QUIT))
+        result["message"] = "Quitting execution"
+
+    elif cmd_type == "set_goal":
+        goal_name = params.get("goal_name")
+
+        # Check execution state to determine action
+        try:
+            from ..main import get_planner_adapter, get_state_manager as _get_sm
+        except ImportError:
+            from main import get_planner_adapter, get_state_manager as _get_sm
+
+        adapter = get_planner_adapter()
+        state_manager = _get_sm()
+
+        if adapter is not None and adapter.is_initialized() and not adapter.is_running():
+            # Execution not running at all - start new execution with this goal
+            success = adapter.start_execution(goal_name)
+            if success:
+                result["message"] = f"Starting execution with goal: {goal_name}"
+            else:
+                result["executed"] = False
+                result["message"] = f"Failed to start execution with goal: {goal_name}"
+        else:
+            # Execution thread is alive - change goal
+            command_bridge.send_command(Command(
+                CommandType.CHANGE_GOAL,
+                params={"goal_name": goal_name}
+            ))
+
+            # Check if execution is paused - if so, also send continue to resume
+            current_state = state_manager.get_state()
+            if current_state.execution_status == ExecutionStatus.PAUSED:
+                command_bridge.send_command(Command(CommandType.CONTINUE))
+                result["message"] = f"Changing goal to {goal_name} and resuming"
+            else:
+                result["message"] = f"Changing goal to {goal_name}"
+
+    elif cmd_type == "action":
+        action = params.get("action")
+        block_id = params.get("block_id")
+        if block_id:
+            command_bridge.send_command(Command(
+                CommandType.INJECT_ACTION,
+                params={"action": action, "args": (block_id,)}
+            ))
+            result["message"] = f"Executing {action} on block {block_id}"
+        else:
+            result["executed"] = False
+            result["message"] = f"Block ID not specified for {action}"
+
+    else:
+        result["executed"] = False
+        result["message"] = f"Unknown command type: {cmd_type}"
+
+    return result
+
+
 @router.post("/command", response_model=VoiceCommandResponse)
 async def process_voice_command(
     request: VoiceCommandRequest,
@@ -230,8 +320,8 @@ async def process_voice_command(
     Process voice command from audio.
 
     1. Transcribe audio to text using OpenAI Whisper
-    2. Parse text to identify command
-    3. Execute command if recognized
+    2. Parse text to identify command(s)
+    3. Execute command(s) if recognized
     """
     try:
         # Decode audio
@@ -243,88 +333,39 @@ async def process_voice_command(
         if not transcript:
             return VoiceCommandResponse(
                 transcript="",
+                commands=[],
                 executed=False,
                 message="No speech detected"
             )
 
-        # Parse command using LLM
-        result = await parse_command(transcript)
+        # Parse commands using LLM
+        commands = await parse_command(transcript)
 
-        if result is None:
+        if not commands:
             return VoiceCommandResponse(
                 transcript=transcript,
+                commands=[],
                 executed=False,
-                message="Command not recognized"
+                message="No command recognized"
             )
 
-        cmd_type, params = result
+        # Execute each command in sequence
+        executed_commands = []
+        messages = []
+        all_executed = True
 
-        # Execute command
-        executed = True
-        message = ""
-
-        if cmd_type == "pause":
-            command_bridge.send_command(Command(CommandType.PAUSE))
-            message = "Pausing execution"
-
-        elif cmd_type == "continue":
-            command_bridge.send_command(Command(CommandType.CONTINUE))
-            message = "Continuing execution"
-
-        elif cmd_type == "quit":
-            command_bridge.send_command(Command(CommandType.QUIT))
-            message = "Quitting execution"
-
-        elif cmd_type == "set_goal":
-            goal_name = params.get("goal_name")
-
-            # Check if execution is running - if so, change goal; if not, start execution
-            try:
-                from ..main import get_planner_adapter
-            except ImportError:
-                from main import get_planner_adapter
-
-            adapter = get_planner_adapter()
-
-            if adapter is not None and adapter.is_initialized() and not adapter.is_running():
-                # Start execution with this goal
-                success = adapter.start_execution(goal_name)
-                if success:
-                    message = f"Starting execution with goal: {goal_name}"
-                else:
-                    executed = False
-                    message = f"Failed to start execution with goal: {goal_name}"
-            else:
-                # Execution already running, just change goal
-                command_bridge.send_command(Command(
-                    CommandType.CHANGE_GOAL,
-                    params={"goal_name": goal_name}
-                ))
-                message = f"Changing goal to {goal_name}"
-
-        elif cmd_type == "action":
-            action = params.get("action")
-            block_id = params.get("block_id")
-            if block_id:
-                command_bridge.send_command(Command(
-                    CommandType.INJECT_ACTION,
-                    params={"action": action, "args": (block_id,)}
-                ))
-                message = f"Executing {action} on block {block_id}"
-            else:
-                executed = False
-                message = f"Block ID not specified for {action}"
-
-        else:
-            executed = False
-            message = f"Unknown command type: {cmd_type}"
+        for cmd in commands:
+            result = execute_single_command(cmd, command_bridge)
+            executed_commands.append(result)
+            messages.append(result["message"])
+            if not result["executed"]:
+                all_executed = False
 
         return VoiceCommandResponse(
             transcript=transcript,
-            command=cmd_type,
-            params=params,
-            executed=executed,
-            message=message
+            commands=executed_commands,
+            executed=all_executed,
+            message=" | ".join(messages)
         )
 
     except Exception as e:
@@ -375,72 +416,39 @@ async def process_voice_upload(
         if not transcript:
             return VoiceCommandResponse(
                 transcript="",
+                commands=[],
                 executed=False,
                 message="No speech detected"
             )
 
-        # Parse and execute using LLM
-        result = await parse_command(transcript)
+        # Parse commands using LLM
+        commands = await parse_command(transcript)
 
-        if result is None:
+        if not commands:
             return VoiceCommandResponse(
                 transcript=transcript,
+                commands=[],
                 executed=False,
-                message="Command not recognized"
+                message="No command recognized"
             )
 
-        cmd_type, params = result
+        # Execute each command in sequence
+        executed_commands = []
+        messages = []
+        all_executed = True
 
-        # Same execution logic as /command endpoint
-        # (simplified for brevity)
-        executed = False
-        message = f"Recognized: {cmd_type}"
-
-        if cmd_type in ("pause", "continue", "quit"):
-            cmd_map = {
-                "pause": CommandType.PAUSE,
-                "continue": CommandType.CONTINUE,
-                "quit": CommandType.QUIT,
-            }
-            command_bridge.send_command(Command(cmd_map[cmd_type]))
-            executed = True
-            message = f"Executing: {cmd_type}"
-
-        elif cmd_type == "set_goal":
-            goal_name = params.get('goal_name')
-
-            # Check if execution is running - if so, change goal; if not, start execution
-            try:
-                from ..main import get_planner_adapter
-            except ImportError:
-                from main import get_planner_adapter
-
-            adapter = get_planner_adapter()
-
-            if adapter is not None and adapter.is_initialized() and not adapter.is_running():
-                # Start execution with this goal
-                success = adapter.start_execution(goal_name)
-                if success:
-                    executed = True
-                    message = f"Starting execution with goal: {goal_name}"
-                else:
-                    executed = False
-                    message = f"Failed to start execution with goal: {goal_name}"
-            else:
-                # Execution already running, just change goal
-                command_bridge.send_command(Command(
-                    CommandType.CHANGE_GOAL,
-                    params=params
-                ))
-                executed = True
-                message = f"Changing goal to: {goal_name}"
+        for cmd in commands:
+            result = execute_single_command(cmd, command_bridge)
+            executed_commands.append(result)
+            messages.append(result["message"])
+            if not result["executed"]:
+                all_executed = False
 
         return VoiceCommandResponse(
             transcript=transcript,
-            command=cmd_type,
-            params=params,
-            executed=executed,
-            message=message
+            commands=executed_commands,
+            executed=all_executed,
+            message=" | ".join(messages)
         )
 
     except Exception as e:

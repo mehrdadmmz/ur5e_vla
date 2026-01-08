@@ -152,6 +152,10 @@ class PlannerAdapter:
                 gripper_open_margin=gripper_cfg.get('open_margin', 10),
                 release_min_dist=motion_cfg.get('release_min_dist', 0.08),
                 table_bounds=self.config.get('table_bounds', None),
+                contact_speed=motion_cfg.get('contact_speed', 0.02),
+                contact_acceleration=motion_cfg.get('contact_acceleration', 0.5),
+                contact_retract=motion_cfg.get('contact_retract', 0.002),
+                safe_height=motion_cfg.get('safe_height', 0.45),
             )
 
             # Set grasp orientations from config
@@ -161,6 +165,14 @@ class PlannerAdapter:
                     grasp_orientations[int(k)] = v
                 self._primitives.set_grasp_orientations(grasp_orientations)
                 print(f"[PlannerAdapter] Loaded grasp orientations for {len(grasp_orientations)} blocks")
+
+            # Set block dimensions from config (for parallel placement calculation)
+            if 'block_dims' in self.config:
+                block_dims = {}
+                for k, v in self.config['block_dims'].items():
+                    block_dims[int(k)] = v
+                self._primitives.set_block_dims(block_dims)
+                print(f"[PlannerAdapter] Loaded block dimensions for {len(block_dims)} blocks")
 
             # Set joint limits from config
             if 'joint_limits' in self.config.get('robot', {}):
@@ -205,15 +217,29 @@ class PlannerAdapter:
         camera_type = camera_cfg.get('type', 'base')
         position_offset = camera_cfg.get('offset', [0.0, 0.0, 0.0])
 
+        # Get resolution from config (default 640x480)
+        resolution = camera_cfg.get('resolution', [640, 480])
+
+        # Convert block_dims from config format {id: [w,l,h]} to {id: (w,l,h)}
+        block_dims_cfg = self.config.get('block_dims', {})
+        block_dims = {int(k): tuple(v) for k, v in block_dims_cfg.items()} if block_dims_cfg else None
+
+        # Convert block_class from config
+        block_class_cfg = self.config.get('block_class', {})
+        block_class = {int(k): int(v) for k, v in block_class_cfg.items()} if block_class_cfg else None
+
         aruco_params = dict(
             marker_length=aruco_cfg.get('marker_size', 0.032),
             visual=self.config.get('visual', False),
             position_offset=position_offset,
+            resolution=tuple(resolution),
             max_reproj_error=aruco_cfg.get('max_reproj_error', 2.0),
             min_sharpness=aruco_cfg.get('min_sharpness', 30.0),
             confident_reproj=aruco_cfg.get('confident_reproj', 1.0),
             confident_sharpness=aruco_cfg.get('confident_sharpness', 50.0),
             stale_age=aruco_cfg.get('stale_age', 2.0),
+            block_dims=block_dims,
+            block_class=block_class,
         )
 
         if camera_type == 'base':
@@ -235,11 +261,17 @@ class PlannerAdapter:
             raise ValueError(f"Unknown camera type: {camera_type}")
 
         self._perception.start()
-        print(f"[PlannerAdapter] Perception initialized ({camera_type} camera)")
+        # Start paused - only update poses at observation position
+        self._perception.pause()
+        print(f"[PlannerAdapter] Perception initialized ({camera_type} camera, paused until observation)")
 
     def observe_world(self, extra_viewpoints: bool = False, print_status: bool = True):
         """
         Get synchronized observations and logical state.
+
+        Only updates block positions when robot is at the observation position.
+        The ArUco monitor is paused during execution to prevent position updates
+        from incorrect camera viewpoints (wrist camera moves with robot).
 
         Returns:
             Tuple of (observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open)
@@ -251,7 +283,12 @@ class PlannerAdapter:
         # the robot to stay low after place actions, leading to poor observations
         if hasattr(self._robot, 'init_pose') and self._robot.init_pose:
             self._robot.move_to_init_pose()
-            time.sleep(self.config.get('motion', {}).get('stability_wait', 1.0))
+
+        # Resume perception to capture new poses at observation position
+        self._perception.resume()
+
+        # Wait for camera stabilization and fresh detections
+        time.sleep(self.config.get('motion', {}).get('stability_wait', 1.0))
 
         # Get observations from perception
         gripper_pos = self._primitives.get_gripper_position()
@@ -265,6 +302,9 @@ class PlannerAdapter:
             gripper_open=gripper_open,
             print_status=print_status,
         )
+
+        # Pause perception to freeze positions until next observation
+        self._perception.pause()
 
         # Convert to logical state
         logical_state = get_logical_state(observations, debug=False)
@@ -499,7 +539,13 @@ class PlannerAdapter:
                             self._current_goal_name = new_goal_name
                             self._current_goal = goal
                             self.state_manager.add_log("info", "system", f"Goal changed to: {new_goal_name}")
-                            self.state_manager.update_state(goal_name=new_goal_name, goal=goal)
+                            # Clear old plan when goal changes
+                            self.state_manager.update_state(
+                                goal_name=new_goal_name,
+                                goal=goal,
+                                current_plan=[],
+                                current_action_index=-1
+                            )
                             observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
                                 extra_viewpoints=True, print_status=False
                             )
@@ -554,6 +600,11 @@ class PlannerAdapter:
                 if plan is None or len(plan) == 0:
                     if plan is None:
                         self.state_manager.add_log("warn", "planner", "Planning failed, retrying...")
+                        # Clear old plan on planning failure
+                        self.state_manager.update_state(
+                            current_plan=[],
+                            current_action_index=-1
+                        )
                     else:
                         self.state_manager.add_log("info", "system", "Goal achieved!")
                         self.state_manager.update_state(execution_status=ExecutionStatus.COMPLETED)
@@ -577,15 +628,17 @@ class PlannerAdapter:
 
                 self.command_bridge.broadcast_action_start(action_name, args, 0)
 
-                pick_actions = ['pick-up', 'unstack', 'remove-beside']
+                pick_actions = ['pick-up', 'unstack', 'remove-beside', 'pick_floating']
                 place_actions = ['align', 'put-down', 'cover', 'release']
 
                 success = False
                 if action_name in pick_actions:
                     # Use _execute_pick_and_observe which explicitly adds holding predicate
                     # (held block is occluded by gripper, so observation alone won't detect it)
+                    # Pass next_action for lookahead (to compute target orientation for cover)
+                    next_action = plan[1] if len(plan) > 1 else None
                     self.state_manager.update_state(execution_status=ExecutionStatus.EXECUTING)
-                    result = self._execute_pick_and_observe(action_name, args, observations)
+                    result = self._execute_pick_and_observe(action_name, args, observations, next_action)
                     success, observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = result
                     if success and logical_state is not None:
                         self.state_manager.update_state(execution_status=ExecutionStatus.OBSERVING)
@@ -686,26 +739,41 @@ class PlannerAdapter:
             ):
                 self.state_manager.update_state(execution_status=ExecutionStatus.IDLE)
 
-    def _execute_pick_action(self, action_name: str, args: tuple, observations: list) -> bool:
-        """Execute pick action and return success."""
+    def _execute_pick_action(self, action_name: str, args: tuple, observations: list,
+                              next_action: tuple = None) -> bool:
+        """Execute pick action and return success.
+
+        Args:
+            action_name: Name of pick action
+            args: Action arguments
+            observations: Current world state
+            next_action: Optional (action_name, args) for lookahead (to compute target orientation for cover)
+        """
         block_transforms = self._perception.get_block_transforms()
         success = self._primitives.execute_action(
-            action_name, args, observations, block_transforms
+            action_name, args, observations, block_transforms, next_action
         )
         return success
 
-    def _execute_pick_and_observe(self, action_name: str, args: tuple, observations: list):
+    def _execute_pick_and_observe(self, action_name: str, args: tuple, observations: list,
+                                   next_action: tuple = None):
         """Execute pick action and return success + updated observations + state.
 
         After grasping, the held block is occluded by the gripper, so we must
         EXPLICITLY add the 'holding' predicate rather than relying on observation.
+
+        Args:
+            action_name: Name of pick action
+            args: Action arguments
+            observations: Current world state
+            next_action: Optional (action_name, args) for lookahead (to compute target orientation for cover)
 
         Returns:
             Tuple of (success, observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open)
         """
         import time
 
-        success = self._execute_pick_action(action_name, args, observations)
+        success = self._execute_pick_action(action_name, args, observations, next_action)
         if success:
             time.sleep(0.3)
             holding = not self._primitives.is_gripper_open()
