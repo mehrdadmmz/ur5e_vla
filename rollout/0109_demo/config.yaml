@@ -135,7 +135,20 @@ grasp_orientations:
   5: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
   6: [1.5708, -1.5708]                        # Plank - grasp along short side (swapped)
   7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
-  19: [1.5708, -1.5708]    
+  19: [1.5708, -1.5708]
+
+# Per-block gripper positions (optional - falls back to global gripper.open_pos/close_pos)
+# Format: {marker_id: [open_pos, close_pos]}
+gripper_positions:
+  0: [125, 255]    # Cube
+  1: [125, 255]    # Cube
+  2: [125, 255]    # Cube
+  3: [125, 255]    # Cube
+  4: [100, 255]    # Plank - wider opening
+  5: [125, 255]    # Cube
+  6: [100, 255]    # Plank - wider opening
+  7: [125, 255]    # Cube
+  19: [100, 255]   # Plank - wider opening    
 
 visual: true             # Show ArUco detection window
 # debug_predicates: true   # UNUSED - parameter not implemented, removed for cleanup

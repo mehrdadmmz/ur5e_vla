@@ -112,6 +112,9 @@ class BlockPrimitives:
         # Block dimensions per block ID [width, length, height] (will be set from config)
         self.block_dims: Dict[int, List[float]] = {}
 
+        # Per-block gripper positions {block_id: [open_pos, close_pos]} (will be set from config)
+        self.gripper_positions: Dict[int, List[int]] = {}
+
         # Joint limits per joint index (will be set from config)
         self.joint_limits: Optional[Dict[int, List[float]]] = None
 
@@ -244,24 +247,32 @@ class BlockPrimitives:
             print(f"moveUntilContact failed: {e}")
             return False
 
-    def _open_gripper(self):
-        """Open the gripper."""
+    def _open_gripper(self, block_id: Optional[int] = None):
+        """Open the gripper, using per-block position if configured."""
         if self.gripper:
-            self.gripper.move(self.gripper_open_pos, self.gripper_speed, self.gripper_force)
+            # Use per-block open position if available, otherwise global default
+            open_pos = self.gripper_open_pos
+            if block_id is not None and block_id in self.gripper_positions:
+                open_pos = self.gripper_positions[block_id][0]
+            self.gripper.move(open_pos, self.gripper_speed, self.gripper_force)
             time.sleep(self.gripper_open_wait)
 
-    def _close_gripper(self):
-        """Close the gripper and wait until it finishes moving."""
+    def _close_gripper(self, block_id: Optional[int] = None):
+        """Close the gripper and wait until it finishes moving, using per-block position if configured."""
         if self.gripper:
+            # Use per-block close position if available, otherwise global default
+            close_pos = self.gripper_close_pos
+            if block_id is not None and block_id in self.gripper_positions:
+                close_pos = self.gripper_positions[block_id][1]
             # Use blocking move_and_wait_for_pos instead of non-blocking move
             if hasattr(self.gripper, 'move_and_wait_for_pos'):
                 pos, status = self.gripper.move_and_wait_for_pos(
-                    self.gripper_close_pos, self.gripper_speed, self.gripper_force
+                    close_pos, self.gripper_speed, self.gripper_force
                 )
                 print(f"Gripper closed: pos={pos}, status={status}")
             else:
                 # Fallback to non-blocking with longer wait
-                self.gripper.move(self.gripper_close_pos, self.gripper_speed, self.gripper_force)
+                self.gripper.move(close_pos, self.gripper_speed, self.gripper_force)
                 time.sleep(self.gripper_close_wait)
             time.sleep(0.2)  # Extra settling time
 
@@ -285,13 +296,13 @@ class BlockPrimitives:
             return pos <= self.gripper_open_pos + self.gripper_open_margin
         return True
 
-    def open_gripper(self):
+    def open_gripper(self, block_id: Optional[int] = None):
         """Open the gripper (public interface)."""
-        self._open_gripper()
+        self._open_gripper(block_id)
 
-    def close_gripper(self):
+    def close_gripper(self, block_id: Optional[int] = None):
         """Close the gripper (public interface)."""
-        self._close_gripper()
+        self._close_gripper(block_id)
 
     def get_default_orientation(self) -> np.ndarray:
         """Get the default gripper-down orientation as axis-angle."""
@@ -313,6 +324,14 @@ class BlockPrimitives:
             block_dims: Dict mapping block_id to [width, length, height] in meters
         """
         self.block_dims = block_dims
+
+    def set_gripper_positions(self, gripper_positions: Dict[int, List[int]]):
+        """Set per-block gripper positions.
+
+        Args:
+            gripper_positions: Dict mapping block_id to [open_pos, close_pos] (0-255)
+        """
+        self.gripper_positions = gripper_positions
 
     def _get_long_axis_offset(self, block_id: int) -> float:
         """Get the angular offset of the block's long axis from its X-axis.
@@ -626,7 +645,7 @@ class BlockPrimitives:
         if not self._ensure_safe_height():
             return False
 
-        self._open_gripper()
+        self._open_gripper(block_id)
 
         # Move to approach (with computed orientation)
         if not self._move_to_pose(self._pose_to_list(approach_pos, grasp_orientation)):
@@ -637,7 +656,7 @@ class BlockPrimitives:
             return False
 
         # Grasp
-        self._close_gripper()
+        self._close_gripper(block_id)
 
         # Lift (maintain orientation)
         if not self._move_linear(self._pose_to_list(approach_pos, grasp_orientation)):
@@ -867,7 +886,7 @@ class BlockPrimitives:
             print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
-        self._open_gripper()
+        self._open_gripper(block_id)
 
         # Retract (maintain orientation)
         if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
@@ -964,7 +983,7 @@ class BlockPrimitives:
             print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
-        self._open_gripper()
+        self._open_gripper(block_id)
 
         # Retract (maintain orientation)
         if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
@@ -1043,7 +1062,7 @@ class BlockPrimitives:
             print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
-        self._open_gripper()
+        self._open_gripper(plank_id)
 
         # Retract (maintain orientation)
         if not self._move_linear(self._pose_to_list(approach_pos, place_orientation)):
@@ -1228,7 +1247,7 @@ class BlockPrimitives:
             print(f"  Warning: No contact detected, continuing anyway")
 
         # Release
-        self._open_gripper()
+        self._open_gripper(block_id)
 
         # Retract
         if not self._move_linear(self._pose_to_list(approach_pos)):

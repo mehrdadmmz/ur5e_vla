@@ -182,6 +182,14 @@ class PlannerAdapter:
                 self._primitives.set_joint_limits(joint_limits)
                 print(f"[PlannerAdapter] Loaded joint limits for {len(joint_limits)} joints")
 
+            # Set per-block gripper positions from config
+            if 'gripper_positions' in self.config:
+                gripper_positions = {}
+                for k, v in self.config['gripper_positions'].items():
+                    gripper_positions[int(k)] = v
+                self._primitives.set_gripper_positions(gripper_positions)
+                print(f"[PlannerAdapter] Loaded gripper positions for {len(gripper_positions)} blocks")
+
             # Set predicate thresholds
             if 'predicates' in self.config:
                 set_thresholds(self.config['predicates'])
@@ -594,6 +602,70 @@ class PlannerAdapter:
                     return
 
                 # ===== PLANNING =====
+                self.state_manager.update_state(execution_status=ExecutionStatus.PLANNING)
+
+                # PHASE 1: Handle floating blocks first (if any exist)
+                # Floating blocks must be cleared before pursuing main goal
+                floating_blocks = [p for p in logical_state if p[0] == 'floating']
+                while floating_blocks:
+                    floating_pred = floating_blocks[0]
+                    block_id = floating_pred[1]
+                    print(f"[Planner] Found floating block {block_id} - handling first")
+                    self.state_manager.add_log("info", "planner", f"Handling floating block {block_id} first")
+
+                    # Mini-goal: place this floating block on table
+                    floating_goal = [('on-table', block_id, str(self.table_id))]
+                    mini_plan = solve_pddl(logical_state, floating_goal, debug=False)
+
+                    if mini_plan is None or len(mini_plan) == 0:
+                        print(f"[Planner] Warning: Could not plan for floating block {block_id}, skipping")
+                        self.state_manager.add_log("warn", "planner", f"Could not plan for floating block {block_id}")
+                        break
+
+                    print(f"[Planner] Mini-plan for floating block: {mini_plan}")
+
+                    # Execute mini-plan actions
+                    for action_name, args in mini_plan:
+                        print(f"[Planner] Executing floating recovery: {action_name} {args}")
+                        self.state_manager.update_state(execution_status=ExecutionStatus.EXECUTING)
+
+                        if action_name == 'pick_floating':
+                            next_action = mini_plan[1] if len(mini_plan) > 1 else None
+                            result = self._execute_pick_and_observe(action_name, args, observations, next_action)
+                            success, observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = result
+                        elif action_name == 'release':
+                            block_transforms = self._perception.get_block_transforms()
+                            success = self._primitives.execute_action(
+                                action_name, args, observations, block_transforms
+                            )
+                        else:
+                            # Unexpected action in floating recovery
+                            block_transforms = self._perception.get_block_transforms()
+                            success = self._primitives.execute_action(
+                                action_name, args, observations, block_transforms
+                            )
+
+                        if not success:
+                            print(f"[Planner] Floating recovery action failed: {action_name}")
+                            self.state_manager.add_log("error", "planner", f"Floating recovery failed: {action_name}")
+                            break
+
+                    # Re-observe after handling floating block
+                    self.state_manager.update_state(execution_status=ExecutionStatus.OBSERVING)
+                    observations, logical_state, stale_ids, uncertain_ids, gripper_pos, gripper_open = self.observe_world(
+                        extra_viewpoints=True, print_status=False
+                    )
+                    self.command_bridge.broadcast_state(
+                        observations, logical_state, stale_ids, uncertain_ids,
+                        gripper_pos, gripper_open
+                    )
+
+                    # Check for remaining floating blocks
+                    floating_blocks = [p for p in logical_state if p[0] == 'floating']
+                    if floating_blocks:
+                        print(f"[Planner] {len(floating_blocks)} floating blocks remaining")
+
+                # PHASE 2: Plan for main goal (floating blocks should be cleared)
                 self.state_manager.update_state(execution_status=ExecutionStatus.PLANNING)
                 plan = solve_pddl(logical_state, goal, debug=False)
 
