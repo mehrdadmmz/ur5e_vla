@@ -25,7 +25,7 @@ gripper:
   # Measure this on your setup - typically 0.15-0.20m for Robotiq grippers
   z_offset: 0.25
   # Gripper positions (0=fully open, 255=fully closed)
-  open_pos: 120
+  open_pos: 125
   close_pos: 255
   # Gripper speed and force (0-255)
   speed: 100
@@ -109,6 +109,7 @@ block_dims:
   5: [0.0375, 0.0375, 0.06]   # Cube
   6: [0.15, 0.05, 0.03]       # Plank (swapped width/length)
   7: [0.0375, 0.0375, 0.06]   # Cube
+  19: [0.15, 0.05, 0.02]      # Plank (X-long, same orientation as block 6)
 
 # Block class by marker ID (2=cube, 3=plank)
 block_class:
@@ -120,6 +121,7 @@ block_class:
   5: 2
   6: 3
   7: 2
+  19: 3
 
 # Grasp orientations per block ID (list of valid Z-rotations in radians, relative to block frame)
 # 0 = gripper aligned with block X-axis, π/2 = aligned with Y-axis
@@ -133,6 +135,7 @@ grasp_orientations:
   5: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
   6: [1.5708, -1.5708]                        # Plank - grasp along short side (swapped)
   7: [0.0, 1.5708, 3.1416, -1.5708]  # Cube
+  19: [1.5708, -1.5708]    
 
 visual: true             # Show ArUco detection window
 # debug_predicates: true   # UNUSED - parameter not implemented, removed for cleanup

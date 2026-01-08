@@ -81,8 +81,13 @@ Available commands:
    - "bridge" - build a bridge structure (two pillars with a plank on top)
    - "tall_bridge" - build a tall bridge (double-height pillars)
    - "tower" - build a vertical stack of 4 blocks
-   - "cn_tower" - build a 5-block tall tower
+   - "totem_pole" - build a totem pole (5-block tall tower)
    - "house" - build a house structure
+   - "boat" - build a boat structure
+   - "tu" - build Chinese character 土 (tǔ, earth). User may say: "build tu", "建个土", "搭土字"
+   - "gan" - build Chinese character 干 (gān, dry). User may say: "build gan", "建个干", "搭干字"
+   - "shi" - build Chinese character 十 (shí, ten). User may say: "build shi", "建个十", "搭十字"
+   - "wang" - build Chinese character 王 (wáng, king). User may say: "build wang", "建个王", "搭王字"
 
 3. Action commands:
    - "pick-up" - pick up a block (requires block_id)
@@ -107,6 +112,8 @@ Examples:
 - "stop and build a bridge" -> {"commands": [{"command": "pause", "params": {}}, {"command": "set_goal", "params": {"goal_name": "bridge"}}]}
 - "quit everything and make a house" -> {"commands": [{"command": "quit", "params": {}}, {"command": "set_goal", "params": {"goal_name": "house"}}]}
 - "grab block 3" -> {"commands": [{"command": "action", "params": {"action": "pick-up", "block_id": "3"}}]}
+- "建个土" -> {"commands": [{"command": "set_goal", "params": {"goal_name": "tu"}}]}
+- "搭王字" -> {"commands": [{"command": "set_goal", "params": {"goal_name": "wang"}}]}
 - "what's the weather" -> {"commands": []}
 - "hello" -> {"commands": []}
 """

@@ -73,7 +73,7 @@ GOAL_LIBRARY: Dict[str, Dict] = {
     },
     # Chinese character: 土 (tu - earth/soil)
     'tu': {
-        'description': 'Build Chinese character 土 (earth)',
+        'description': 'Build Chinese character 土 (tǔ - earth/soil)',
         'predicates': [
             ('on-table', '4', '9'),
             ('above', '7', '4'), ('above', '6', '7'),
@@ -81,9 +81,19 @@ GOAL_LIBRARY: Dict[str, Dict] = {
             ('top', '3'),  # Block 3 is on top
         ]
     },
+    # Chinese character: 王 (wang - king)
+    'wang': {
+        'description': 'Build Chinese character 王 (wáng - king)',
+        'predicates': [
+            ('on-table', '19', '9'),
+            ('above', '7', '19'), ('above', '4', '7'),
+            ('above', '5', '4'), ('above', '6', '5'),
+            ('top', '6'),  # Block 19 is on top
+        ]
+    },
     # Chinese character: 干 (gan - dry/stem)
     'gan': {
-        'description': 'Build Chinese character 干 (dry)',
+        'description': 'Build Chinese character 干 (gān - dry/stem)',
         'predicates': [
             ('on-table', '7', '9'),
             ('above', '4', '7'), ('above', '3', '4'),
@@ -93,7 +103,7 @@ GOAL_LIBRARY: Dict[str, Dict] = {
     },
     # Chinese character: 十 (shi - ten)
     'shi': {
-        'description': 'Build Chinese character 十 (ten)',
+        'description': 'Build Chinese character 十 (shí - ten)',
         'predicates': [
             ('on-table', '7', '9'),
             ('above', '4', '7'), ('above', '3', '4'),
