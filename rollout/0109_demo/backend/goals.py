@@ -75,10 +75,10 @@ GOAL_LIBRARY: Dict[str, Dict] = {
     'tu': {
         'description': 'Build Chinese character 土 (tǔ - earth/soil)',
         'predicates': [
-            ('on-table', '4', '9'),
-            ('above', '7', '4'), ('above', '6', '7'),
-            ('above', '3', '6'),
-            ('top', '3'),  # Block 3 is on top
+            ('on-table', '19', '9'),
+            ('above', '7', '19'), ('above', '4', '7'),
+            ('above', '5', '4'),
+            ('top', '5'),  # Block 5 is on top
         ]
     },
     # Chinese character: 王 (wang - king)
