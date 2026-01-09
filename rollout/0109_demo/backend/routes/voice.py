@@ -379,8 +379,8 @@ async def process_voice_command(
         # Get current state for context
         state_manager = get_state_manager()
         current_state = state_manager.get_state()
-        current_goal = current_state.current_goal
-        logical_state = current_state.logical_state
+        current_goal = current_state.goal_name
+        logical_state = current_state.predicates
 
         # Parse commands using LLM with context
         commands = await parse_command(transcript, current_goal, logical_state)
@@ -468,8 +468,8 @@ async def process_voice_upload(
         # Get current state for context
         state_manager = get_state_manager()
         current_state = state_manager.get_state()
-        current_goal = current_state.current_goal
-        logical_state = current_state.logical_state
+        current_goal = current_state.goal_name
+        logical_state = current_state.predicates
 
         # Parse commands using LLM with context
         commands = await parse_command(transcript, current_goal, logical_state)
