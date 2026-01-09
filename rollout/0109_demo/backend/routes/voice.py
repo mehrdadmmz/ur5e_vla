@@ -116,12 +116,30 @@ Examples:
 - "搭王字" -> {"commands": [{"command": "set_goal", "params": {"goal_name": "wang"}}]}
 - "what's the weather" -> {"commands": []}
 - "hello" -> {"commands": []}
+
+Goal progressions (use when context shows current goal):
+- "tu" (土) + "add bar on top" / "上面加一横" = "wang" (王)
+- "shi" (十) + "add bar on top" = "gan" (干)
+- "gan" (干) - "remove top bar" = "shi" (十)
+- "tower" + "make it taller" = "totem_pole"
+
+If context is provided and user gives a relative command like "add a bar on top",
+use the current goal to determine the new goal.
 """
 
 
-async def parse_command(transcript: str) -> List[Dict[str, Any]]:
+async def parse_command(
+    transcript: str,
+    current_goal: Optional[str] = None,
+    logical_state: Optional[List] = None
+) -> List[Dict[str, Any]]:
     """
     Parse transcript into commands using LLM.
+
+    Args:
+        transcript: The transcribed voice command
+        current_goal: Current goal being executed (for context)
+        logical_state: Current logical state predicates (for context)
 
     Returns:
         List of command dicts, each with 'command' and 'params' keys.
@@ -147,13 +165,26 @@ async def parse_command(transcript: str) -> List[Dict[str, Any]]:
 
     client = openai.OpenAI(api_key=api_key)
 
+    # Build context string if available
+    context = ""
+    if current_goal:
+        context += f"Current goal: {current_goal}\n"
+    if logical_state:
+        # Summarize key predicates (limit for token count)
+        key_predicates = [p for p in logical_state if p[0] in ('on-table', 'above', 'beside', 'holding')][:8]
+        if key_predicates:
+            context += f"Current state: {key_predicates}\n"
+
+    # Build messages
+    messages = [{"role": "system", "content": COMMAND_PARSE_SYSTEM_PROMPT}]
+    if context:
+        messages.append({"role": "system", "content": f"Context:\n{context}"})
+    messages.append({"role": "user", "content": transcript})
+
     try:
         response = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": COMMAND_PARSE_SYSTEM_PROMPT},
-                {"role": "user", "content": transcript}
-            ],
+            messages=messages,
             temperature=0,
             max_tokens=300
         )
@@ -345,8 +376,14 @@ async def process_voice_command(
                 message="No speech detected"
             )
 
-        # Parse commands using LLM
-        commands = await parse_command(transcript)
+        # Get current state for context
+        state_manager = get_state_manager()
+        current_state = state_manager.get_state()
+        current_goal = current_state.current_goal
+        logical_state = current_state.logical_state
+
+        # Parse commands using LLM with context
+        commands = await parse_command(transcript, current_goal, logical_state)
 
         if not commands:
             return VoiceCommandResponse(
@@ -428,8 +465,14 @@ async def process_voice_upload(
                 message="No speech detected"
             )
 
-        # Parse commands using LLM
-        commands = await parse_command(transcript)
+        # Get current state for context
+        state_manager = get_state_manager()
+        current_state = state_manager.get_state()
+        current_goal = current_state.current_goal
+        logical_state = current_state.logical_state
+
+        # Parse commands using LLM with context
+        commands = await parse_command(transcript, current_goal, logical_state)
 
         if not commands:
             return VoiceCommandResponse(
