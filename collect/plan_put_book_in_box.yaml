@@ -1,0 +1,80 @@
+# Plan for put_book_in_box. Read by:
+#   * verify_book_box.py --plan <this file>          (its `verify:` block supplies defaults)
+#   * collect_book_box.py --plan <this file>    (same block; keeps verify + collect in sync)
+#   * collect/main.py --plan <this file>             (legacy plan_executor path)
+#
+# Task: pick a book from a bookshelf slot, place it (standing) into a fixed
+# file box. The bookshelf has 5 discrete x slots and a continuous y range
+# within each slot; a random (x_slot, y) is sampled every episode. The
+# book always ends up at the same fixed xyz inside the file box.
+#
+# All z's below are from the arm jog to the actual grasp/place positions.
+# The book is standing vertically -- the pick z is where the gripper closes
+# on the book's midsection, not on top of it.
+
+task:
+  name: "put_book_in_box"
+  num_rounds: 50
+  record: True
+  dryrun: False
+  include_home: True
+
+poses:
+  home:        [0.00,     0.45,   0.50,  1, 0, 0, 0]
+  book_start:  [0.024,    0.663,  0.400, 1, 0, 0, 0]   # overridden by --book at runtime
+  file_box:    [0.204,    0.678,  0.400, 1, 0, 0, 0]   # FIXED position; never overridden
+
+heights:
+  book:               0.450   # hover z above book (default)
+  box:                0.450   # hover z above file box (default)
+  pick_z_book:        0.300   # gripper z when grasping book on shelf (tuned lower)
+  release_z_in_box:   0.305   # gripper z when releasing book in file box (lowered further)
+  lift_z:             0.500   # default
+
+actions:
+  pick:
+    - move_to:    {pose: $pose, height: $height}
+    - gripper: open
+    - move_delta: [0, 0, -0.150, 0, 0, 0, 1]        # descent = pick_z_book - hover_z (0.300-0.450)
+    - gripper: close
+    - move_delta: [0, 0,   0.200, 0, 0, 0, 1]       # lift    = lift_z - pick_z_book (0.500-0.300)
+
+  place_in_box:
+    - move_to:    {pose: $pose, height: $height}
+    - move_delta: [0, 0, -0.109, 0, 0, 0, 1]        # descent = release_z_in_box - hover_z (0.341-0.450)
+    - gripper: open                                 # release book in file box
+    - move_delta: [0, 0,   0.159, 0, 0, 0, 1]       # lift    = lift_z - release_z_in_box (0.500-0.341)
+
+  go_home:
+    - move_to: {pose: home}
+
+sequence:
+  - pick:         {pose: book_start, height: 0.450}
+  - go_home
+  - place_in_box: {pose: file_box,   height: 0.450}
+  - go_home
+
+reset: []
+
+# Defaults consumed by verify_book_box.py / collect_book_box.py.
+# Any CLI arg overrides. file_box xy + release z are FIXED constants and
+# get written into every episode's meta.json for eval-time reproducibility.
+verify:
+  # Initial book xy from arm jog. Overridden by --book at runtime.
+  book: "0.024,0.663"
+  hover_z: 0.45              # default
+  # Grasp z's from arm jog.
+  pick_z_book:        0.300   # TCP z when grasping book on shelf (tuned lower from 325.53mm)
+  release_z_on_shelf: 0.290   # TCP z when placing book back on shelf during reset (below pick z: gripper seats book onto shelf before releasing)
+  # File box (FIXED for this task).
+  file_box: "0.204,0.678"
+  release_z_in_box:   0.305   # TCP z when releasing book in file box (lowered further)
+  pick_z_book_in_box: 0.300   # TCP z when regrasping book off the box during reset (tuned lower)
+  lift_z: 0.50               # default
+  # Bookshelf slot sampling: 4 discrete x positions and continuous y in [y_min, y_max].
+  # Each reset samples a fresh (x_slot, y) for the book_new position.
+  shelf_x_choices: [0.024, -0.047, -0.112, -0.179]  # 4 slots from jog (mm/1000)
+  shelf_y_min: 0.663
+  shelf_y_max: 0.731
+  hover_pause: 6.0
+  grip_pos: 200

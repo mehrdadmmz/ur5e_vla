@@ -1,184 +1,193 @@
-# UR5e VLA Data Collection & Rollout
+# UR5e VLA Data Collection
 
-Data collection and policy rollout system for UR5e robot with Robotiq gripper and RealSense cameras.
+Data collection system for UR5e robot manipulation tasks. Collects synchronized multi-camera RGB + depth demonstrations with full robot state, converts to HDF5 for VLA training.
+
+## Hardware
+
+| Component | Model | Notes |
+|-----------|-------|-------|
+| Robot | Universal Robots UR5e | RTDE control/receive |
+| Gripper | Robotiq 2F-85 | Socket control on port 63352 |
+| Cameras | 3× Intel RealSense D435/D435i | Synchronized RGB + depth at 640×480 |
+
+Camera placement (configured in `collect/config.yaml`):
+- **camera1** (`337322072205`): base-mounted
+- **camera2** (`243322072780`): wrist-mounted
+- **camera3** (`233722072756`): opposite-side countertop
 
 ## Setup
 
+### Network
+
+The robot is at `192.168.56.101`. Set your workstation's Ethernet interface to the same subnet (e.g., `192.168.56.1/24`).
+
+Verify connectivity:
 ```bash
-# Create virtual environment
+ping -c 2 192.168.56.101
+nc -vz -w 2 192.168.56.101 30004   # RTDE
+nc -vz -w 2 192.168.56.101 63352   # Gripper
+```
+
+### Python environment
+
+```bash
 uv venv .venv
 source .venv/bin/activate
-
-# Install dependencies
 uv pip install -r requirements.txt
 ```
 
-## Project Structure
+Verify imports:
+```bash
+.venv/bin/python -c "import yaml, numpy, cv2, pyrealsense2, rtde_control, rtde_receive, h5py; print('ok')"
+```
+
+### Camera check
+
+```bash
+rs-enumerate-devices -s          # list connected RealSense devices
+.venv/bin/python test_cam.py     # live preview from all 3 cameras
+```
+
+## Repository Structure
 
 ```
 ur5e_vla/
-├── collect/           # Data collection
-│   ├── main.py        # Main collection script
-│   ├── config.yaml    # Hardware configuration
-│   ├── plan.yaml      # Task definition
-│   ├── plan_executor.py
-│   ├── recorder.py    # Camera & state recording
-│   ├── ur5e_controller.py
-│   ├── robotiq_gripper.py
-│   └── utils.py
-├── data/              # Recorded episodes
-│   ├── convert_to_hdf5.py
-│   └── TASK_NAME/
-│       ├── 0/         # Episode 0
-│       │   ├── state.csv
-│       │   ├── camera1/
-│       │   └── camera2/
-│       ├── 0.hdf5     # Converted
-│       └── ...
-├── rollout/           # Policy inference
-│   ├── replay_episode.py
-│   └── ...
+├── collect/                     # Shared collection infrastructure
+│   ├── config.yaml              # Hardware config (cameras, robot IP, gripper)
+│   ├── recorder.py              # Multi-camera + state recorder (RGB + depth)
+│   ├── robotiq_gripper.py       # Gripper socket driver
+│   ├── ur5e_controller.py       # Robot motion primitives
+│   ├── plan_executor.py         # YAML plan interpreter
+│   ├── main.py                  # Legacy plan-based collection entry point
+│   ├── utils.py                 # Shared utilities
+│   └── plan_*.yaml              # Per-task plan configs (verify block = source of truth)
+├── collect_*.py                 # Per-task standalone collection scripts
+├── verify_*.py                  # Per-task setup/calibration scripts
+├── convert_ep_hdf5.py           # Batch HDF5 converter (writes into episode dirs)
+├── data/
+│   ├── convert_to_hdf5.py       # Core HDF5 conversion logic
+│   └── run_single.py            # Single-episode converter wrapper
+├── test_cam.py                  # Camera preview utility
+├── rollout/                     # Policy inference / replay
+├── handeye/                     # Hand-eye calibration data
 └── requirements.txt
 ```
 
-## Data Collection
-
-### 1. Configure Hardware
-
-Edit `collect/config.yaml`:
-
-```yaml
-recording:
-  hz: 20
-  camera_serials:
-    - "337322072205"  # base camera
-    - "243322072780"  # wrist camera
-  camera_resolution: [640, 480]
-
-robot:
-  ip: "192.168.56.101"
-  speed: 0.4
-  acceleration: 0.4
-
-gripper:
-  port: 63352
-  speed: 100
-  force: 100
-```
-
-### 2. Define Task
-
-Edit `collect/plan.yaml`:
-
-```yaml
-task:
-  name: my_task
-  num_rounds: 10
-  record: true
-
-poses:
-  home: [-0.2, -0.5, 0.3, 0, 0, 0, 1]  # [x, y, z, qx, qy, qz, qw]
-  pick_pos: [-0.3, -0.4, 0.15, 0, 0, 0, 1]
-
-actions:
-  pick:
-    - move_to: {pose: $pose, height: $height}
-    - move_delta: [0, 0, -0.05, 0, 0, 0, 1]
-    - gripper: close
-    - move_delta: [0, 0, 0.10, 0, 0, 0, 1]
-
-sequence:
-  - move_to: home
-  - pick: {pose: pick_pos, height: 0.20}
-
-reset:
-  - gripper: open
-  - move_to: home
-```
-
-### 3. Run Collection
-
-```bash
-cd collect
-python main.py --plan plan.yaml --config config.yaml
-```
-
-Data saves to `data/TASK_NAME/EPISODE_NUM/`.
-
 ## Data Format
 
-### Raw Recording
+### Raw episode layout
 
-Each episode folder contains:
-- `state.csv` - Robot state at each timestep
-- `camera1/`, `camera2/` - Images named by timestamp (e.g., `1734567890.123456.png`)
+Each episode is a directory under `data/<task>/<subset>/data/<episode_number>/`:
 
-CSV columns:
 ```
-frame_idx, timestamp,
-joint_0..joint_5,
-tcp_x, tcp_y, tcp_z, tcp_qx, tcp_qy, tcp_qz, tcp_qw,
-gripper_pos,
-camera1_file, camera2_file
-```
-
-### HDF5 Format
-
-Convert recordings to HDF5 for training:
-
-```bash
-python data/convert_to_hdf5.py convert data/TASK_NAME/
+data/put_cup_in_bowl/clean/data/1/
+├── state.csv                    # Robot state per frame
+├── meta.json                    # Episode metadata (task, subset, episode, params)
+├── intrinsics.json              # Per-camera fx/fy/cx/cy/depth_scale
+├── camera1/                     # RGB frames (timestamp-named PNGs)
+├── camera2/
+├── camera3/
+├── camera1_depth/               # Aligned depth frames (uint16 PNGs, mm)
+├── camera2_depth/
+└── camera3_depth/
 ```
 
-Structure:
+`state.csv` columns:
+```
+frame_idx, timestamp, joint_0..joint_5, tcp_x, tcp_y, tcp_z,
+tcp_qx, tcp_qy, tcp_qz, tcp_qw, gripper_pos, camera1_file, camera2_file, camera3_file
+```
+
+### HDF5 schema
+
+Each episode converts to `episode<n>.hdf5` inside the episode directory:
+
 ```
 @num_frames: N
-@num_cameras: 2
+@num_cameras: 3
 timestamps: (N,) float64
 observations/
   images/
-    camera1: (N, 480, 640, 3) uint8
+    camera1: (N, 480, 640, 3) uint8      # RGB
     camera2: (N, 480, 640, 3) uint8
-  qpos: (N, 7) float32      # joints(6) + gripper(1)
-  state: (N, 14) float32    # tcp_pos(3) + tcp_quat(4) + joints(6) + gripper(1)
-  tcp_pos: (N, 3) float32
-  tcp_quat: (N, 4) float32  # [qx, qy, qz, qw]
-  joints: (N, 6) float32
-  gripper_pos: (N,) float32 # 0-255
+    camera3: (N, 480, 640, 3) uint8
+  depth/
+    camera1: (N, 480, 640) uint16         # mm, multiply by depth_scale for meters
+    camera2: (N, 480, 640) uint16
+    camera3: (N, 480, 640) uint16
+  qpos: (N, 7) float32                   # joints(6) + normalized_gripper(1)
+  state: (N, 14) float32                 # tcp_pos(3) + tcp_quat(4) + joints(6) + gripper(1)
+  tcp_pos: (N, 3) float32                # end-effector position (meters)
+  tcp_quat: (N, 4) float32               # end-effector orientation [qx, qy, qz, qw]
+  joints: (N, 6) float32                 # joint angles (radians)
+  gripper_pos: (N,) float32              # raw gripper position (0-255)
+camera_info/
+  camera{1,2,3}/
+    coeffs: (5,) float64                 # distortion coefficients
+    @fx, @fy, @cx, @cy: float            # intrinsic parameters
+    @depth_scale: float                   # depth → meters multiplier
 ```
 
-Inspect an HDF5 file:
+**Depth note:** RealSense writes `65535` (uint16 max) for invalid pixels. Mask with `depth[depth == 65535] = 0` before use.
+
+### Subset organization
+
+Each task has 5 subsets:
+- `clean` — 100 episodes, no distractors
+- `d1` through `d4` — 25 episodes each, with increasing clutter/distractors
+
+## Completed Tasks
+
+| Task | Description | Clean | d1 | d2 | d3 | d4 | Total |
+|------|-------------|-------|----|----|----|----|-------|
+| `put_book_in_box` | Pick up book, place in box | 100 | 25 | 25 | 25 | 25 | 200 |
+| `put_bowl_on_rack` | Pick up bowl, place on dish rack | 100 | 25 | 25 | 25 | 25 | 200 |
+| `put_cup_in_bowl` | Pick up cup, place into bowl | 100 | 25 | 25 | 25 | 25 | 200 |
+| `put_mug_on_coaster` | Pick up mug, place on coaster | 100 | 25 | 25 | 25 | 25 | 200 |
+| `stack_two_cubes` | Pick up cube, stack on another cube | 100 | 25 | 25 | 25 | 25 | 200 |
+| **Total** | | **500** | **125** | **125** | **125** | **125** | **1000** |
+
+Dataset available on HuggingFace: [`mzxuan/real_world_data`](https://huggingface.co/datasets/mzxuan/real_world_data)
+
+## Workflow: Adding a New Task
+
+See [TASKS.md](TASKS.md) for the full guide. Summary:
+
+1. **Create a verify script** (`verify_<objects>.py`) — interactive tool to jog the robot, find pick/place heights, and run one full trial cycle.
+2. **Create a plan YAML** (`collect/plan_<task>.yaml`) — the `verify:` block is the single source of truth for all motion heights and positions.
+3. **Create a collect script** (`collect_<task>.py`) — copy an existing one as template. Reads heights from the plan YAML.
+4. **Verify** the setup: `.venv/bin/python verify_<objects>.py --plan collect/plan_<task>.yaml`
+5. **Collect clean** (100 eps): `.venv/bin/python -u collect_<task>.py -n 100`
+6. **Collect cluttered** (25 eps × 4): `.venv/bin/python -u collect_<task>.py --subset d1 -n 25 --reset-pause 10`
+7. **Convert to HDF5**: `.venv/bin/python convert_ep_hdf5.py --task <task> --subsets clean,d1,d2,d3,d4`
+
+## Uploading to HuggingFace
+
+Use the `hf` CLI with Xet high-performance transfer:
+
 ```bash
-python data/convert_to_hdf5.py inspect data/TASK_NAME/0.hdf5
+export HF_TOKEN=<your_token>
+export HF_XET_HIGH_PERFORMANCE=1
+export PATH=.venv/bin:$PATH
+
+hf upload <repo_id> data/<task>/clean <task>/clean \
+    --repo-type=dataset \
+    --include="**/*.hdf5" --include="**/*.json" --include="**/*.csv" \
+    --commit-message="clean <task> (100 eps)"
 ```
 
-## Replay Episode
+Uploads only HDF5 + metadata (not raw PNGs). Idempotent — safe to re-run on interruption.
 
-Replay a recorded episode on the robot:
+## Key Files
 
-```bash
-cd rollout
-python replay_episode.py ../data/TASK_NAME/0 --speed 0.3
-```
-
-Options:
-- `--rate 0.5` - Playback speed multiplier
-- `--no-gripper` - Skip gripper replay
-- `--dry-run` - Print actions without executing
-- `--skip-start` - Don't move to start position first
-
-## Plan Primitives
-
-Available actions in `plan.yaml`:
-
-| Primitive | Description |
-|-----------|-------------|
-| `move_to: pose_name` | Move to named pose |
-| `move_to: {pose: name, height: 0.2}` | Move to pose at height |
-| `move_delta: [dx, dy, dz, dqx, dqy, dqz, dqw]` | Relative move |
-| `gripper: open` | Open gripper |
-| `gripper: close` | Close gripper |
-| `gripper: 128` | Move gripper to position (0-255) |
-| `wait: 0.5` | Wait seconds |
-
-Compound actions can combine primitives with variable substitution (`$pose`, `$height`).
+| File | Purpose |
+|------|---------|
+| `collect/recorder.py` | Multi-camera RGB+depth recorder with synchronized state logging |
+| `collect/robotiq_gripper.py` | Robotiq 2F-85 socket driver |
+| `collect/config.yaml` | Camera serials, robot IP, recording Hz |
+| `collect/plan_<task>.yaml` | Per-task config; `verify:` block = source of truth for heights |
+| `collect_<task>.py` | Per-task collection loop (pick → place → reset) |
+| `verify_<objects>.py` | Interactive setup: hover placement + one trial cycle |
+| `convert_ep_hdf5.py` | Batch converter: raw episodes → HDF5 (writes into episode dirs) |
+| `data/convert_to_hdf5.py` | Core conversion logic (called by `convert_ep_hdf5.py`) |
+| `test_cam.py` | Quick camera preview / connectivity check |

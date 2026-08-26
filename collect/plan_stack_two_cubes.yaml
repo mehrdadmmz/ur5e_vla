@@ -1,0 +1,69 @@
+# Plan for stack_two_cubes. Read by:
+#   * verify_two_cubes.py --plan <this file>         (its `verify:` block supplies defaults)
+#   * collect_two_cubes.py --plan <this file>   (same block; keeps verify + collect in sync)
+#   * collect/main.py --plan <this file>             (legacy plan_executor path)
+#
+# Task: pick cube_a, stack it on top of cube_b. Both are Rubik's cubes
+# (~5.7 cm edge). Cube is a rigid box, gripper easily wraps around it.
+# Place uses moveUntilContact and lands cube_a on top of cube_b's top face.
+#
+# Pick z's below are PLACEHOLDERS. Fill in from arm jog to grasp position.
+
+task:
+  name: "stack_two_cubes"
+  num_rounds: 50
+  record: True
+  dryrun: False
+  include_home: True
+
+poses:
+  home:        [0.00,    0.45,   0.50,  1, 0, 0, 0]
+  cube_a:      [0.092,   0.757,  0.250, 1, 0, 0, 0]   # overridden by --cube-a at runtime (top cube = cube 2)
+  cube_b:      [-0.115,  0.644,  0.250, 1, 0, 0, 0]   # overridden by --cube-b at runtime (bottom/base = cube 1)
+
+heights:
+  cube_a:             0.250   # hover z above cube_a
+  cube_b:             0.250   # hover z above cube_b
+  pick_z_table:       0.132   # gripper z when grasping either cube on the table (jogged)
+  release_on_cube:    0.189   # gripper z when releasing cube_a on cube_b (pick_z_table + cube_height)
+  lift_z:             0.300
+
+actions:
+  pick:
+    - move_to:    {pose: $pose, height: $height}
+    - gripper: open
+    - move_delta: [0, 0, -0.118, 0, 0, 0, 1]        # descent = pick_z_table - hover_z (0.132-0.250)
+    - gripper: close
+    - move_delta: [0, 0,   0.168, 0, 0, 0, 1]       # lift    = lift_z - pick_z_table
+
+  place_on_cube:
+    - move_to:    {pose: $pose, height: $height}
+    - move_delta: [0, 0, -0.061, 0, 0, 0, 1]        # descent = release_on_cube - hover_z
+    - gripper: open                                 # release cube_a on top of cube_b
+    - move_delta: [0, 0,   0.111, 0, 0, 0, 1]       # lift    = lift_z - release_on_cube
+
+  go_home:
+    - move_to: {pose: home}
+
+sequence:
+  - pick:          {pose: cube_a, height: 0.250}
+  - go_home
+  - place_on_cube: {pose: cube_b, height: 0.250}
+  - go_home
+
+reset: []
+
+# Defaults consumed by verify_two_cubes.py / collect_two_cubes.py via --plan.
+# Any CLI arg overrides.
+verify:
+  # Initial xy positions from arm jog. Overridden by --cube-a / --cube-b.
+  cube_a: "0.092,0.757"    # top cube (the one being picked & stacked on top) = cube 2
+  cube_b: "-0.115,0.644"   # bottom cube (base of the stack) = cube 1
+  hover_z: 0.25
+  # Grasp z's from arm jog (mm converted to m; z = 132.23mm for both cubes).
+  pick_z_table:       0.132   # TCP z when grasping a cube on the table
+  pick_z_cube_on_cube: 0.189  # TCP z when regrasping cube_a from top of cube_b (pick_z_table + cube_height)
+  lift_z: 0.30
+  cube_height: 0.057   # standard 3x3 Rubik's cube edge length
+  hover_pause: 6.0
+  grip_pos: 200        # tighten with --grip-pos if cube slips

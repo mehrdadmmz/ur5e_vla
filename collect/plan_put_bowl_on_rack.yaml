@@ -1,0 +1,79 @@
+# Plan for put_bowl_on_rack. Read by:
+#   * verify_bowl_rack.py --plan <this file>         (its `verify:` block supplies defaults)
+#   * collect_bowl_rack.py --plan <this file>   (same block; keeps verify + collect in sync)
+#   * collect/main.py --plan <this file>             (legacy plan_executor path)
+#
+# Task: pick a bowl, place it on a dish rack. The dish rack sits at a FIXED
+# xy on the table -- we never move it. Only the bowl varies between episodes,
+# and it's constrained to a small disk (~4 cm radius) around a center point
+# so the arm never risks hitting the rack while placing the bowl on the
+# table during reset. On the rack, the bowl always lands at the same xyz
+# (also given from arm jog), so the final resting pose is consistent.
+#
+# All numbers below are from arm jog to the actual grasp / place positions.
+
+task:
+  name: "put_bowl_on_rack"
+  num_rounds: 50
+  record: True
+  dryrun: False
+  include_home: True
+
+poses:
+  home:        [0.00,     0.45,   0.50,  1, 0, 0, 0]
+  bowl_start:  [-0.003,   0.569,  0.250, 1, 0, 0, 0]   # bowl center; overridden by --bowl at runtime
+  dish_rack:   [0.172,    0.819,  0.250, 1, 0, 0, 0]   # FIXED position; never overridden
+
+heights:
+  bowl:               0.250   # hover z above bowl
+  rack:               0.250   # hover z above dish rack
+  pick_z_table:       0.122   # gripper z when grasping bowl on table (jogged)
+  release_z_on_rack:  0.149   # gripper z when placing bowl on rack (jogged)
+  lift_z:             0.300
+
+actions:
+  pick:
+    - move_to:    {pose: $pose, height: $height}
+    - gripper: open
+    - move_delta: [0, 0, -0.128, 0, 0, 0, 1]        # descent = pick_z_table - hover_z (0.122-0.250)
+    - gripper: close
+    - move_delta: [0, 0,   0.178, 0, 0, 0, 1]       # lift    = lift_z - pick_z_table
+
+  place_on_rack:
+    - move_to:    {pose: $pose, height: $height}
+    - move_delta: [0, 0, -0.101, 0, 0, 0, 1]        # descent = release_z_on_rack - hover_z
+    - gripper: open                                 # release bowl on rack
+    - move_delta: [0, 0,   0.151, 0, 0, 0, 1]       # lift    = lift_z - release_z_on_rack
+
+  go_home:
+    - move_to: {pose: home}
+
+sequence:
+  - pick:          {pose: bowl_start, height: 0.250}
+  - go_home
+  - place_on_rack: {pose: dish_rack,  height: 0.250}
+  - go_home
+
+reset: []
+
+# Defaults consumed by verify_bowl_rack.py / collect_bowl_rack.py.
+# Any CLI arg overrides. Dish rack xy + release z are FIXED constants and
+# are read into every episode's meta.json for eval-time reproducibility.
+verify:
+  # Initial bowl xy from arm jog. Overridden by --bowl at runtime.
+  bowl: "-0.003,0.569"
+  hover_z: 0.25
+  # Grasp z's from arm jog (mm converted to m).
+  pick_z_table:       0.122   # TCP z when grasping bowl on table (jog: z=122.11mm)
+  # Dish rack (FIXED for this task).
+  dish_rack: "0.172,0.819"
+  release_z_on_rack:  0.149   # TCP z when releasing bowl on rack (jog: z=149.43mm)
+  pick_z_bowl_on_rack: 0.149  # TCP z when regrasping bowl off rack during reset (same as release)
+  lift_z: 0.30
+  # Bowl xy jitter: during reset, the bowl is placed uniformly inside a
+  # disk of radius `bowl_jitter_radius` around the FIXED `bowl_center`.
+  # Keeps the bowl in a bounded area so the arm never risks hitting the rack.
+  bowl_center: "-0.003,0.569"
+  bowl_jitter_radius: 0.04
+  hover_pause: 6.0
+  grip_pos: 200

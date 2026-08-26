@@ -1,0 +1,75 @@
+# Plan for put_mug_on_coaster. Read by:
+#   * verify_mug_coaster.py --plan <this file>        (its `verify:` block supplies defaults)
+#   * collect_mug_coaster.py --plan <this file>  (same block; keeps verify + collect in sync)
+#   * collect/main.py --plan <this file>              (legacy plan_executor path; task/poses/actions/sequence)
+#
+# Task: pick a mug, place it on a coaster. Coaster is flat (~1.5cm thick), so
+# placement uses moveUntilContact and the gripper releases at contact height.
+# Both mug and coaster get moved during reset. Coaster is 10cm diameter --
+# wider than the Robotiq max open (85mm) so coaster grip is friction against
+# the outside wall (same as bowl in cup+bowl task).
+#
+# Pick z's below are PLACEHOLDERS. Fill them in once you jog the arm manually
+# to the grasp positions and read out the TCP z.
+
+task:
+  name: "put_mug_on_coaster"
+  num_rounds: 50
+  record: True
+  dryrun: False
+  include_home: True
+
+poses:
+  home:        [0.00,    0.45,   0.50,  1, 0, 0, 0]
+  mug_start:   [-0.128,  0.580,  0.250, 1, 0, 0, 0]   # overridden by --mug at runtime
+  coaster:     [0.011,   0.793,  0.250, 1, 0, 0, 0]   # overridden by --coaster at runtime
+
+heights:
+  # Mirror verify_mug_coaster.py -- from arm jog.
+  mug:                0.250   # hover z above mug
+  coaster:            0.250   # hover z above coaster
+  pick_z_table:       0.147   # gripper z when grasping mug on table (jogged)
+  release_coaster:    0.162   # gripper z when releasing mug on coaster (pick_z_table + coaster_thickness)
+  lift_z:             0.300   # z the arm lifts to after grasp / release
+
+actions:
+  pick:
+    - move_to:    {pose: $pose, height: $height}   # go to hover_z
+    - gripper: open
+    - move_delta: [0, 0, -0.103, 0, 0, 0, 1]        # descent = pick_z_table - hover_z (0.147-0.250)
+    - gripper: close
+    - move_delta: [0, 0,   0.153, 0, 0, 0, 1]       # lift    = lift_z - pick_z_table
+
+  place_on_coaster:
+    - move_to:    {pose: $pose, height: $height}   # hover over coaster
+    - move_delta: [0, 0, -0.088, 0, 0, 0, 1]        # descent = release_coaster - hover_z
+    - gripper: open                                 # release mug onto coaster
+    - move_delta: [0, 0,   0.138, 0, 0, 0, 1]       # lift    = lift_z - release_coaster
+
+  go_home:
+    - move_to: {pose: home}
+
+sequence:
+  - pick:             {pose: mug_start, height: 0.250}
+  - go_home
+  - place_on_coaster: {pose: coaster,   height: 0.250}
+  - go_home
+
+reset: []
+
+# Defaults consumed by verify_mug_coaster.py --plan <this_file> and
+# collect_mug_coaster.py --plan <this_file>. Any CLI arg overrides.
+verify:
+  # Initial xy positions from arm jog. Overridden by --mug / --coaster at runtime.
+  mug:      "0.065,0.575"
+  coaster:  "-0.107,0.694"
+  hover_z: 0.25
+  # Grasp z's from arm jog (mm converted to m).
+  pick_z_table:       0.147   # TCP z when grasping mug on table   (mug jog: z=146.83mm)
+  pick_z_coaster:     0.101   # TCP z when grasping coaster        (coaster jog: z=100.92mm)
+  pick_z_mug_on_coaster: 0.162  # TCP z when regrasping mug from coaster (pick_z_table + coaster_thickness)
+  lift_z: 0.30
+  mug_height:      0.10       # mug height rough
+  coaster_thickness: 0.015    # 1.5 cm
+  hover_pause: 6.0
+  grip_pos: 200               # tighten with --grip-pos if mug or coaster slips

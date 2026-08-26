@@ -1,0 +1,75 @@
+# Plan for put_cup_in_bowl. Read by:
+#   * verify_cup_bowl.py --plan <this file>       (its `verify:` block supplies defaults)
+#   * collect_cup_bowl.py --plan <this file> (same block; keeps verify + collect in sync)
+#   * collect/main.py --plan <this file>          (legacy plan_executor path; the `task:` /
+#                                                 `poses:` / `actions:` / `sequence:` blocks)
+#
+# The actively-used collect entry point is collect_cup_bowl.py; the
+# main.py path is kept working but the current bulk-collect flow does not
+# use it.
+task:
+  name: "put_cup_in_bowl"
+  num_rounds: 50
+  record: True
+  dryrun: False
+  include_home: True   # go to home before recording (not recorded)
+
+# Named poses [x, y, z, qx, qy, qz, qw]
+# The z in cup_start is overridden by the pick action's `height` at move_to time.
+poses:
+  home:      [0.00,   0.45,  0.50,  1, 0, 0, 0]
+  cup_start: [0.141,  0.573, 0.250, 1, 0, 0, 0]   # z = hover_z (cosmetic; overridden)
+  bowl:      [-0.036, 0.741, 0.250, 1, 0, 0, 0]
+
+heights:
+  # These mirror verify_cup_bowl.py so the same numbers drive verify + collect.
+  cup:          0.250   # hover z above cup            (verify --hover-z)
+  bowl:         0.250   # hover z above bowl           (verify --hover-z)
+  pick_z_table: 0.180   # gripper z when grasping cup on table   (verify --pick-z-table)
+  release_bowl: 0.190   # gripper z when releasing cup into bowl (verify --pick-z-cup-in-bowl)
+  lift_z:       0.300   # z the arm lifts to after grasp / release (verify --lift-z)
+
+actions:
+  pick:
+    # hover_z=0.250, pick_z_table=0.180, lift_z=0.300
+    - move_to:    {pose: $pose, height: $height}   # go to hover_z
+    - gripper: open                                 # ensure open before descent
+    - move_delta: [0, 0, -0.070, 0, 0, 0, 1]        # descent = pick_z_table - hover_z
+    - gripper: close                                # grasp
+    - move_delta: [0, 0,   0.120, 0, 0, 0, 1]       # lift    = lift_z - pick_z_table
+
+  place_in_bowl:
+    # hover_z=0.250, release_bowl=0.190, lift_z=0.300
+    - move_to:    {pose: $pose, height: $height}   # hover over bowl
+    - move_delta: [0, 0, -0.060, 0, 0, 0, 1]        # descent = release_bowl - hover_z
+    - gripper: open                                 # release cup into bowl
+    - move_delta: [0, 0,   0.110, 0, 0, 0, 1]       # lift    = lift_z - release_bowl
+
+  go_home:
+    - move_to: {pose: home}
+
+# Recorded sequence: (1) already at home via include_home,
+# (2) pick cup, (3) home, (4) place in bowl, (5) home.
+sequence:
+  - pick:          {pose: cup_start, height: 0.250}
+  - go_home
+  - place_in_bowl: {pose: bowl,      height: 0.250}
+  - go_home
+
+# No automated reset -- user manually repositions cup and bowl between runs.
+reset: []
+
+# Defaults consumed by verify_cup_bowl.py --plan <this_file>.
+# Each key mirrors a CLI arg on that script (dashes -> underscores).
+# Any CLI arg passed at runtime overrides the value here.
+verify:
+  cup: "0.052,0.819"       # initial cup xy (m) -- jog: x=51.67 y=819.34
+  bowl: "-0.071,0.697"     # initial bowl xy (m) -- jog: x=-71.13 y=696.55
+  hover_z: 0.25            # hover z above pick (must equal heights.cup)
+  pick_z_table: 0.171      # z at which the cup is grasped from the table -- jog: z=170.71mm
+  pick_z_bowl: 0.121       # z at which the bowl is grasped during reset -- jog: z=120.98mm
+  pick_z_cup_in_bowl: 0.181  # z at which the cup is grasped back out of the bowl (cup falls to bowl inner bottom, so ~pick_z_table + 1cm bowl-bottom lip)
+  lift_z: 0.30             # z the arm lifts to after grasp / place
+  cup_height: 0.11
+  bowl_height: 0.06
+  hover_pause: 6.0         # seconds spent hovering in phase 1 (for manual placement)
