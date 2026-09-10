@@ -17,7 +17,7 @@ import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "data"))
-from convert_to_hdf5 import episode_to_hdf5  # noqa: E402
+from convert_to_hdf5 import episode_to_hdf5, validate_hdf5  # noqa: E402
 
 
 DATA_ROOT = "/home/joshua/Desktop/ur5e_vla/data"
@@ -39,9 +39,14 @@ def convert_subset(task, subset):
         ep_dir = f"{data_dir}/{ep}"
         out = f"{ep_dir}/episode{ep}.hdf5"
         if os.path.isfile(out):
-            print(f"  [{i}/{len(eps)}] ep{ep}: SKIP (exists, {os.path.getsize(out)/1e6:.1f} MB)")
-            skipped += 1
-            continue
+            try:
+                validate_hdf5(out, ep_dir)
+                size_mb = os.path.getsize(out) / 1e6
+                print(f"  [{i}/{len(eps)}] ep{ep}: SKIP (valid, {size_mb:.1f} MB)")
+                skipped += 1
+                continue
+            except Exception as error:
+                print(f"  [{i}/{len(eps)}] ep{ep}: REBUILD invalid file ({error})")
         t0 = time.time()
         try:
             episode_to_hdf5(ep_dir, out, compress=True)

@@ -39,6 +39,10 @@ After conversion:
 
 These are all covered by `.gitignore`.
 
+Calibration attempts under `camera3_eye_to_hand/results/` are also ignored by
+default. Force-add only a reviewed, accepted result when it should become a
+versioned reference calibration.
+
 ## Flow to add + run a new task
 
 1. **Write** verify + plan + collect script (copy existing files as templates).
@@ -61,6 +65,13 @@ These are all covered by `.gitignore`.
    ```bash
    .venv/bin/python convert_ep_hdf5.py --task <task> --subsets clean,d1,d2,d3,d4
    ```
+
+For `place_three_cups_in_bowls`, run the additional read-only dataset audit
+after collection and conversion:
+
+```bash
+.venv/bin/python audit_three_cups_dataset.py --expect-rewritten
+```
 
 ## Design guardrails
 

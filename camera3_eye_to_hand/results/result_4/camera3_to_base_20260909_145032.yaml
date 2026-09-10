@@ -1,0 +1,100 @@
+format_version: 1
+transform_name: T_base_camera3
+transform_convention: Pose of camera3 expressed in robot base; p_base = T_base_camera3
+  @ p_camera3
+matrix:
+- - -0.999933498230953
+  - 0.0079266957142679
+  - -0.008376551239206028
+  - 0.056698102520902384
+- - 0.011130183099449902
+  - 0.8534925737676479
+  - -0.5209861279800545
+  - 1.0634179717766834
+- - 0.0030196257685940046
+  - -0.521044714029929
+  - -0.8535240405762968
+  - 0.5844354100498808
+- - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+translation_m:
+- 0.056698102520902384
+- 1.0634179717766834
+- 0.5844354100498808
+quaternion_xyzw:
+- 0.004948953871690169
+- 0.962672077160091
+- -0.27060898169083775
+- -0.002959516869290284
+metrics:
+  num_samples: 25
+  num_inliers: 25
+  translation_rmse_m: 0.0032923925731971927
+  translation_median_m: 0.002666868606326571
+  translation_max_m: 0.00535829349348692
+  rotation_rmse_deg: 0.48587415366251
+  rotation_median_deg: 0.39906804216882275
+  rotation_max_deg: 0.9181450044667828
+sources:
+  config: /home/joshua/Desktop/ur5e_vla/camera3_eye_to_hand/config.yaml
+  wrist_calibration: /home/joshua/Desktop/ur5e_vla/handeye/handeye_data/calibration_20260102_142634.npy
+  T_ee_camera2:
+  - - 0.9999329719408745
+    - -0.01118326959879045
+    - -0.002997683534209229
+    - -0.030061781486868017
+  - - 0.01120486788020705
+    - 0.9999106660254392
+    - 0.007287722850784212
+    - -0.03957966949844703
+  - - 0.0029159151698230574
+    - -0.007320823016813565
+    - 0.9999689510125197
+    - 0.062496414475635566
+  - - 0.0
+    - 0.0
+    - 0.0
+    - 1.0
+  wrist_camera2_serial: '243322072780'
+  wall_camera3_serial: '233722072756'
+charuco:
+  squares_x: 7
+  squares_y: 5
+  square_length_m: 0.025
+  marker_length_m: 0.018
+  dictionary: 6X6_250
+  minimum_corners: 6
+camera_intrinsics:
+  wrist_camera2:
+    serial: '243322072780'
+    width: 640
+    height: 480
+    fx: 610.37255859375
+    fy: 609.6961669921875
+    cx: 326.442138671875
+    cy: 244.6796875
+    distortion_model: distortion.inverse_brown_conrady
+    coefficients:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+  wall_camera3:
+    serial: '233722072756'
+    width: 640
+    height: 480
+    fx: 606.0448608398438
+    fy: 605.9701538085938
+    cx: 320.9389953613281
+    cy: 245.60028076171875
+    distortion_model: distortion.inverse_brown_conrady
+    coefficients:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+created_at: '2026-09-09T14:50:32.129726-04:00'

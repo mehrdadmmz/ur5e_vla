@@ -1,0 +1,50 @@
+# Camera3 eye-to-hand calibration configuration
+# All relative paths are resolved from this file's directory.
+
+robot:
+  ip: "192.168.56.101"
+
+cameras:
+  # Existing calibrated wrist camera.
+  wrist_camera2:
+    serial: "243322072780"
+    resolution: [640, 480]
+    fps: 30
+
+  # Fixed wall-mounted camera whose base-frame pose will be estimated.
+  wall_camera3:
+    serial: "233722072756"
+    resolution: [640, 480]
+    fps: 30
+
+charuco:
+  # Must match the newly printed board at 100% / actual size.
+  squares_x: 7
+  squares_y: 5
+  square_length_m: 0.025
+  marker_length_m: 0.018
+  dictionary: "6X6_250"
+  # OpenCV's iterative pose solver requires at least 6 correspondences.
+  minimum_corners: 6
+
+calibration:
+  # Known T_ee_camera2 from the existing wrist hand-eye calibration.
+  wrist_extrinsic_file: "../handeye/handeye_data/calibration_20260102_142634.npy"
+
+  # Runtime results stay isolated under camera3_eye_to_hand/results/.
+  output_dir: "results"
+
+  # Pressing 's' averages several frames at one stationary board pose.
+  samples_per_capture: 10
+  minimum_valid_fraction: 0.6
+  sample_delay_s: 0.05
+  max_reprojection_error_px: 2.0
+
+  # Reject a frame if the TCP changes while the two cameras are read.
+  max_robot_motion_m: 0.0005
+  max_robot_motion_deg: 0.1
+
+  # Final fit requirements and candidate-transform outlier thresholds.
+  minimum_captures: 15
+  max_translation_deviation_m: 0.03
+  max_rotation_deviation_deg: 5.0

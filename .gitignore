@@ -13,6 +13,20 @@ __pycache__/
 data/*/
 *.hdf5
 
+# Legacy per-task collection state kept directly under data/
+data/*_positions.jsonl
+data/*_state.json
+
+# Local calibration runs. The accepted camera3 result is tracked explicitly.
+camera3_eye_to_hand/results/result_*/
+
+# Local scratch notes
+MMZ/
+
+# Superseded one-off dataset upload helpers (kept locally for reference)
+archive_upload_three_cups.sh
+run_three_cups_upload_tmux.sh
+
 # IDE
 .vscode/
 .idea/

@@ -6,8 +6,9 @@ data:
 recording:
   hz: 20
   camera_serials:
-    - "337322072205"  # base camera
-    - "243322072780"  # wrist camera
+    - "337322072205"  # base camera (camera1)
+    - "243322072780"  # wrist camera (camera2)
+    - "233722072756"  # countertop camera (camera3)
   camera_resolution: [640, 480]
 
 robot:

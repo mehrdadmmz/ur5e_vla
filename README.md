@@ -68,6 +68,7 @@ ur5e_vla/
 │   ├── convert_to_hdf5.py       # Core HDF5 conversion logic
 │   └── run_single.py            # Single-episode converter wrapper
 ├── test_cam.py                  # Camera preview utility
+├── camera3_eye_to_hand/         # Fixed camera3 extrinsic calibration workflow
 ├── rollout/                     # Policy inference / replay
 ├── handeye/                     # Hand-eye calibration data
 └── requirements.txt
@@ -83,6 +84,7 @@ Each episode is a directory under `data/<task>/<subset>/data/<episode_number>/`:
 data/put_cup_in_bowl/clean/data/1/
 ├── state.csv                    # Robot state per frame
 ├── meta.json                    # Episode metadata (task, subset, episode, params)
+├── task_sequence.json           # Optional task/chunk annotations and language goal
 ├── intrinsics.json              # Per-camera fx/fy/cx/cy/depth_scale
 ├── camera1/                     # RGB frames (timestamp-named PNGs)
 ├── camera2/
@@ -98,6 +100,9 @@ frame_idx, timestamp, joint_0..joint_5, tcp_x, tcp_y, tcp_z,
 tcp_qx, tcp_qy, tcp_qz, tcp_qw, gripper_pos, camera1_file, camera2_file, camera3_file
 ```
 
+Annotated multi-step tasks append `chunk_index`, `phase`, `active_target_id`,
+and `active_destination_id` to each row.
+
 ### HDF5 schema
 
 Each episode converts to `episode<n>.hdf5` inside the episode directory:
@@ -105,6 +110,8 @@ Each episode converts to `episode<n>.hdf5` inside the episode directory:
 ```
 @num_frames: N
 @num_cameras: 3
+@hdf5_schema_version: 2
+frame_indices: (N,) int64
 timestamps: (N,) float64
 observations/
   images/
@@ -126,6 +133,9 @@ camera_info/
     coeffs: (5,) float64                 # distortion coefficients
     @fx, @fy, @cx, @cy: float            # intrinsic parameters
     @depth_scale: float                   # depth → meters multiplier
+metadata/                                 # lossless meta/intrinsics JSON copies
+frame_annotations/                       # optional per-frame task context
+task/                                    # optional task sequence and step boundaries
 ```
 
 **Depth note:** RealSense writes `65535` (uint16 max) for invalid pixels. Mask with `depth[depth == 65535] = 0` before use.
@@ -145,7 +155,8 @@ Each task has 5 subsets:
 | `put_cup_in_bowl` | Pick up cup, place into bowl | 100 | 25 | 25 | 25 | 25 | 200 |
 | `put_mug_on_coaster` | Pick up mug, place on coaster | 100 | 25 | 25 | 25 | 25 | 200 |
 | `stack_two_cubes` | Pick up cube, stack on another cube | 100 | 25 | 25 | 25 | 25 | 200 |
-| **Total** | | **500** | **125** | **125** | **125** | **125** | **1000** |
+| `place_three_cups_in_bowls` | Place three colored cups into three bowls | 100 | 25 | 25 | 25 | 25 | 200 |
+| **Total** | | **600** | **150** | **150** | **150** | **150** | **1200** |
 
 Dataset available on HuggingFace: [`mzxuan/real_world_data`](https://huggingface.co/datasets/mzxuan/real_world_data)
 
@@ -160,6 +171,21 @@ See [TASKS.md](TASKS.md) for the full guide. Summary:
 5. **Collect clean** (100 eps): `.venv/bin/python -u collect_<task>.py -n 100`
 6. **Collect cluttered** (25 eps × 4): `.venv/bin/python -u collect_<task>.py --subset d1 -n 25 --reset-pause 10`
 7. **Convert to HDF5**: `.venv/bin/python convert_ep_hdf5.py --task <task> --subsets clean,d1,d2,d3,d4`
+
+The multi-step three-cup task uses `collect_three_cups_bowls.py`,
+`verify_three_cups_bowls.py`, and
+`collect/plan_place_three_cups_in_bowls.yaml`. Its dataset-specific integrity
+check is `audit_three_cups_dataset.py`.
+
+## Camera3 Extrinsic Calibration
+
+The isolated [`camera3_eye_to_hand`](camera3_eye_to_hand/) workflow estimates
+the fixed wall camera pose `T_base_camera3` using the calibrated wrist camera
+and a ChArUco board. See its README for the capture and validation procedure.
+
+The accepted calibration is
+[`result_4`](camera3_eye_to_hand/results/result_4/); other local trial runs are
+ignored so rerunning calibration does not clutter version control.
 
 ## Uploading to HuggingFace
 
@@ -191,3 +217,5 @@ Uploads only HDF5 + metadata (not raw PNGs). Idempotent — safe to re-run on in
 | `convert_ep_hdf5.py` | Batch converter: raw episodes → HDF5 (writes into episode dirs) |
 | `data/convert_to_hdf5.py` | Core conversion logic (called by `convert_ep_hdf5.py`) |
 | `test_cam.py` | Quick camera preview / connectivity check |
+| `camera3_eye_to_hand/` | Read-only robot-state workflow for calibrating fixed camera3 |
+| `audit_three_cups_dataset.py` | Cross-check three-cup metadata, frames, and geometry |

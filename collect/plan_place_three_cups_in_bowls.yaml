@@ -1,0 +1,136 @@
+# Plan for place_three_cups_in_bowls.
+#
+# Read by:
+#   * collect_three_cups_bowls.py --plan <this> (uses `verify:` block for defaults)
+#
+# All coordinates in meters, robot base frame. Quaternion convention: xyzw.
+
+task:
+  name: "place_three_cups_in_bowls"
+
+verify:
+  # Manually restored positions for resuming at episode 11 (meters).
+  cup_blue:   "0.36667,0.58186"
+  cup_pink:   "0.00425,0.55843"
+  cup_yellow: "0.34711,0.77091"
+  bowl_blue:   "-0.00611,0.74391"
+  bowl_pink:   "0.19486,0.61563"
+  bowl_yellow: "0.16500,0.85015"
+
+  # Heights (m). 0.30/0.25 was too low (hit standing cups, ~8.5cm tall);
+  # 0.43/0.38 hit the arm's max reach. Middle-ground below gives ~10cm
+  # clearance above standing cup tops during transport.
+  hover_z:                  0.32    # transport height between grasp and release
+  pick_z_cup:               0.174   # grasp cup on table
+  pick_z_bowl:              0.134   # grasp bowl on table (for reset reshuffle)
+  release_z_cup_in_bowl:    0.185   # release cup into bowl (~ pick_z_cup + 0.011)
+  pick_z_cup_in_bowl:       0.184   # pick cup back out of bowl for reset
+  lift_z:                   0.36    # post-grasp lift height (slightly above hover)
+  hover_pause:              6.0
+
+  # Motion
+  transit_grip_pos:         0
+  grip_pos:                 200
+  speed:                    0.20
+  accel:                    0.40
+  descend_speed:            0.05
+  descend_accel:            0.40
+  home:                     "-0.10,0.55,0.30"
+
+# Table trapezoid corners (m, robot base frame). Front y=0.495, back y=0.817.
+workspace:
+  corners:
+    - [-0.14677, 0.49502]   # front-left
+    - [ 0.38220, 0.49502]   # front-right
+    - [ 0.30239, 0.81663]   # back-right
+    - [-0.11589, 0.81663]   # back-left
+
+# Per-subset episode counts.
+subset_counts:
+  # Episodes 1-10 already contain 4 forced + 6 unrestricted. Each remaining
+  # ten-episode batch uses 3 forced + 7 unrestricted, producing 31/69 overall.
+  clean:
+    total: 100
+    forced: 31
+    unrestricted: 69
+    batch_size: 10
+    forced_by_batch: [4, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+  d1:    {total:  25, forced:  8, unrestricted: 17}
+  d2:    {total:  25, forced:  8, unrestricted: 17}
+  d3:    {total:  25, forced:  7, unrestricted: 18}
+  d4:    {total:  25, forced:  7, unrestricted: 18}
+
+# Object catalog. Dimensions optional (annotator can infer from vision + roster).
+# footprint_radius_m is REQUIRED — drives non-overlap layout sampling.
+object_catalog:
+  task_objects:
+    - {id: cup_blue,    name: cup,  color: blue,   geometry_class: cylinder,   footprint_radius_m: 0.0375}
+    - {id: cup_pink,    name: cup,  color: pink,   geometry_class: cylinder,   footprint_radius_m: 0.0375}
+    - {id: cup_yellow,  name: cup,  color: yellow, geometry_class: cylinder,   footprint_radius_m: 0.0375}
+    - {id: bowl_blue,   name: bowl, color: blue,   geometry_class: hemisphere, footprint_radius_m: 0.0575}
+    - {id: bowl_pink,   name: bowl, color: pink,   geometry_class: hemisphere, footprint_radius_m: 0.0575}
+    - {id: bowl_yellow, name: bowl, color: yellow, geometry_class: hemisphere, footprint_radius_m: 0.0575}
+  clutter_pool:
+    - {id: apple,      name: apple,        geometry_class: sphere}
+    - {id: carrot,     name: carrot,       geometry_class: elongated_cylinder}
+    - {id: mouse,      name: mouse,        geometry_class: rounded_box}
+    - {id: rubik_cube, name: "Rubik's cube", geometry_class: cube}
+
+# Default time available to place the next episode's clutter. An explicit
+# --reset-pause command-line value still overrides these defaults.
+reset_pause_seconds:
+  clean: 1
+  d1: 5
+  d2: 10
+  d3: 15
+  d4: 20
+
+# Exact clutter-roster blocks. Episodes follow this order without shuffling,
+# so each roster stays in one consecutive block and resumes remain predictable.
+# Clutter is placed by hand; its pose remains null in task_sequence.json.
+clutter_schedules:
+  clean:
+    - {objects: [], count: 100}
+  d1:
+    - {objects: [apple], count: 7}
+    - {objects: [rubik_cube], count: 6}
+    - {objects: [mouse], count: 6}
+    - {objects: [carrot], count: 6}
+  d2:
+    - {objects: [apple, mouse], count: 5}
+    - {objects: [apple, carrot], count: 5}
+    - {objects: [apple, rubik_cube], count: 5}
+    - {objects: [mouse, carrot], count: 5}
+    - {objects: [carrot, rubik_cube], count: 5}
+  d3:
+    - {objects: [apple, mouse, rubik_cube], count: 8}
+    - {objects: [apple, carrot, rubik_cube], count: 8}
+    - {objects: [mouse, carrot, rubik_cube], count: 9}
+  d4:
+    - {objects: [apple, mouse, carrot, rubik_cube], count: 25}
+
+# Transition-aware reset sampling for cup+bowl xy. Clutter is not sampled.
+# Each reset uniformly samples from all 90 valid six-object move orders. The
+# only order constraint is that a cup must move before the bowl containing it;
+# every target also avoids all objects physically present at that move.
+# min_object_gap_m is edge-to-edge margin ADDED on top of (r_a + r_b). With
+# cup radius=3.75cm, bowl radius=5.75cm, gap=0.05m:
+#   cup-cup   min center dist = 12.5cm  (5cm edge gap)
+#   bowl-bowl min center dist = 16.5cm  (5cm edge gap)
+#   cup-bowl  min center dist = 14.5cm  (5cm edge gap)
+# 5cm is the tightest gap that stays 100% feasible in this trapezoid; 8cm
+# only worked ~15% of the time. Prevents the "too close after reset" issue.
+sampling:
+  min_object_gap_m: 0.05
+  # Extra edge-to-edge clearance from objects still at their old positions.
+  # Final-to-final destinations retain the larger 5 cm margin above.
+  transition_object_gap_m: 0.03
+  min_reset_shift_m: 0.03
+  max_attempts_per_object: 100
+  # Transition-aware packing is more constrained than a final-only layout.
+  # Retries are CPU-only and normally finish in a fraction of a second.
+  max_layout_restarts: 2000
+
+language_instructions:
+  forced_same_color: "place each cup in the same color bowl"
+  unrestricted:      "place each cup in any bowl"
