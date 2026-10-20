@@ -1,0 +1,61 @@
+description: Accepted 3-camera calibration of the UR5e setup (calibrated 2026-10-20).
+convention: T_A_B = pose of frame B in frame A, p_A = T_A_B @ p_B. Camera frames are
+  the RealSense colour optical frames at 640x480.
+robot_frames: base = UR base. ee = UR TCP with pendant TCP 'TCP' (zero offset = tool
+  flange), Feature 'Base'.
+how_to_use: {fixed cameras: p_base = T_base_cameraN @ p_cameraN, wrist camera: p_base
+    = T_base_ee(current TCP pose) @ T_ee_camera2 @ p_camera2}
+board: {squares_x: 7, squares_y: 5, square_length_m: 0.0234, marker_length_m: 0.01685,
+  dictionary: 6X6_250, note: 'printed at 93.6% scale: 7 squares = 164 mm, 5 squares
+    = 117 mm'}
+cameras:
+  camera1:
+    serial: '337322072205'
+    mount: base-mounted (fixed)
+    transform: T_base_camera1
+    file: T_base_camera1.npy
+    matrix:
+    - [0.999370840917486, -0.030368784887454026, 0.018321005112606516, -0.02702810446019823]
+    - [-0.028102188010140545, -0.3628747488261465, 0.9314140774614713, 0.19920425205970427]
+    - [-0.02163768363109423, -0.9313429301652644, -0.36349987218465424, 0.05413937140109983]
+    - [0.0, 0.0, 0.0, 1.0]
+    quality: {num_inliers: 15, fixed_reprojection_rms_px: 0.3795, board_disagreement_rms_mm: 2.5816,
+      approx_sigma_translation_mm: 0.4436}
+    intrinsics_K:
+    - [607.4708251953125, 0.0, 326.9261169433594]
+    - [0.0, 606.9967041015625, 243.59999084472656]
+    - [0.0, 0.0, 1.0]
+  camera2:
+    serial: '243322072780'
+    mount: wrist
+    transform: T_ee_camera2
+    file: T_ee_camera2.npy
+    matrix:
+    - [0.9999469856385372, 0.005366025097725754, 0.008788156066741788, -0.032956950141544046]
+    - [-0.005586652251976393, 0.9996649012969077, 0.025275965494107266, -0.044702561534814944]
+    - [-0.008649579701830619, -0.025323721876817223, 0.9996418828166851, 0.07342239690209378]
+    - [0.0, 0.0, 0.0, 1.0]
+    quality: {num_inliers: 21, reprojection_rms_px: 0.5597, board_consistency_rms_mm: 0.378,
+      approx_sigma_translation_mm: 0.1278, approx_sigma_rotation_deg: 0.106}
+    intrinsics_K:
+    - [610.37255859375, 0.0, 326.442138671875]
+    - [0.0, 609.6961669921875, 244.6796875]
+    - [0.0, 0.0, 1.0]
+  camera3:
+    serial: '233722072756'
+    mount: wall (fixed)
+    transform: T_base_camera3
+    file: T_base_camera3.npy
+    matrix:
+    - [-0.9999253806181152, 0.001885016713374895, 0.012069793192411016, 0.04772139524160526]
+    - [-0.004882670786010625, 0.8440010718776569, -0.5363192614435559, 1.0492227276428798]
+    - [-0.011197889163262528, -0.5363381744583879, -0.8439288891233259, 0.5691597637090312]
+    - [0.0, 0.0, 0.0, 1.0]
+    quality: {num_inliers: 20, fixed_reprojection_rms_px: 0.212, board_disagreement_rms_mm: 1.1553,
+      approx_sigma_translation_mm: 0.414}
+    intrinsics_K:
+    - [606.0448608398438, 0.0, 320.9389953613281]
+    - [0.0, 605.9701538085938, 245.60028076171875]
+    - [0.0, 0.0, 1.0]
+validation: {camera2-camera3: 'mean 2.1 mm, max 3.7 mm over 6 board positions (validation/validation_20261020_160322.csv)',
+  camera1-camera2: 'mean 2.1 mm, max 3.8 mm over 6 board positions (validation/validation_20261020_161025.csv)'}
