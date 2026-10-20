@@ -9,7 +9,12 @@ a collect script, or the cameras will show as busy.
 import pyrealsense2 as rs
 import numpy as np
 import cv2
+import os
 import sys
+import yaml
+
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "collect", "config.yaml")
+
 
 def list_realsense_devices():
     ctx = rs.context()
@@ -21,6 +26,15 @@ def list_realsense_devices():
         except Exception:
             pass
     return serials
+
+
+def camera_names(serials):
+    """Order devices as camera1/2/3 from collect/config.yaml (USB order is arbitrary)."""
+    with open(CONFIG_PATH) as f:
+        configured = [str(s) for s in yaml.safe_load(f)["recording"]["camera_serials"]]
+    ordered = [s for s in configured if s in serials] + [s for s in serials if s not in configured]
+    names = [f"camera{configured.index(s) + 1}" if s in configured else "unknown" for s in ordered]
+    return ordered, names
 
 def make_pipeline(serial, width=640, height=480, fps=30):
     pipeline = rs.pipeline()
@@ -54,9 +68,10 @@ def main():
         print("No RealSense devices found")
         sys.exit(1)
 
+    serials, names = camera_names(serials)
     print(f"Using {len(serials)} device(s):")
-    for i, s in enumerate(serials):
-        print(f"  Cam{i+1} serial: {s}")
+    for name, s in zip(names, serials):
+        print(f"  {name} serial: {s}")
 
     cams = [make_pipeline(s) for s in serials]
 
@@ -65,7 +80,7 @@ def main():
             color_imgs = []
             depth_imgs = []
             drop = False
-            for i, ((pipeline, align, depth_scale), serial) in enumerate(zip(cams, serials)):
+            for (pipeline, align, depth_scale), serial, name in zip(cams, serials, names):
                 frames = pipeline.wait_for_frames()
                 frames = align.process(frames)
                 c = frames.get_color_frame()
@@ -77,9 +92,9 @@ def main():
                 img_c = np.asanyarray(c.get_data())
                 img_d = depth_to_colormap(d, depth_scale, max_dist_m=2.0)
 
-                cv2.putText(img_c, f"Cam{i+1} Color ({serial})", (10, 30),
+                cv2.putText(img_c, f"{name} Color ({serial})", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                cv2.putText(img_d, f"Cam{i+1} Depth", (10, 30),
+                cv2.putText(img_d, f"{name} Depth", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
                 color_imgs.append(img_c)
