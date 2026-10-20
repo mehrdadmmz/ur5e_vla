@@ -1,0 +1,78 @@
+# Camera calibration workflow: wrist camera2 first, then fixed camera1 / camera3.
+# Robot is read-only here (rtde_receive). TCP on the pendant: "TCP" = 0 offset (flange).
+
+robot:
+  ip: "192.168.56.101"
+
+cameras:
+  camera1:
+    serial: "337322072205"
+    role: "base-mounted (fixed)"
+  camera2:
+    serial: "243322072780"
+    role: "wrist"
+  camera3:
+    serial: "233722072756"
+    role: "wall (fixed)"
+
+# Same colour stream as data collection.
+stream:
+  resolution: [640, 480]
+  fps: 30
+
+# One 7x5 ChArUco board for every step. Measure it after printing: the
+# width of all 7 squares divided by 7 = square_length_m. The marker is the
+# black-and-white pattern inside a white square (~0.67x the square on our print).
+board:
+  squares_x: 7
+  squares_y: 5
+  # Designed as 25 / 18 mm but printed at 93.6% scale.
+  # Measured: 7 squares = 164 mm, 5 squares = 117 mm.
+  square_length_m: 0.0234
+  marker_length_m: 0.01685   # 18 mm scaled by 23.4/25
+  dictionary: "6X6_250"
+
+# One press of 's' = one capture, averaged over several frames.
+capture:
+  minimum_corners: 6
+  flush_frames: 8              # drop possibly stale frames before sampling
+  samples_per_capture: 10
+  minimum_valid_fraction: 0.6
+  sample_delay_s: 0.03
+  max_reprojection_error_px: 2.0
+  max_tcp_speed: 0.002         # robot must be stopped (m/s + rad/s)
+  max_robot_motion_m: 0.0005
+  max_robot_motion_deg: 0.1
+
+wrist:
+  minimum_captures: 15
+  # Warn when a new pose nearly repeats an earlier one (adds little information).
+  duplicate_translation_m: 0.02
+  duplicate_rotation_deg: 5.0
+
+# auto_wrist.py: the robot moves the wrist camera around the board (MOVES THE ROBOT).
+auto_wrist:
+  speed: 0.08                  # m/s, straight-line moves
+  acceleration: 0.3            # m/s^2
+  settle_s: 1.0                # wait after each move before capturing
+  radii_m: [0.28, 0.36]        # camera-to-board-centre distances
+  tilts_deg: [15, 25, 35]      # from straight down
+  azimuths: 8                  # directions per tilt
+  twist_deg: 30                # wrist twist alternated +/- around the aim
+  gripper_length_m: 0.20       # flange to fingertip centre, with margin (2F-85 ~0.17)
+  min_clearance_m: 0.08        # lowest gripper point above the board, along every path
+  max_distance_from_home_m: 0.35
+  max_rotation_from_home_deg: 70
+  max_joint_change_deg: 90     # vs home joints; prevents wrist flips / cable wrap
+
+# Calibration in use, only used here to report how far a new run has moved.
+previous_results:
+  camera1: "three_cam_calibration/T_base_camera1.npy"
+  camera2: "three_cam_calibration/T_ee_camera2.npy"
+  camera3: "three_cam_calibration/T_base_camera3.npy"
+
+fixed:
+  minimum_captures: 15
+  # Captures whose camera estimate is this far from the consensus are dropped.
+  max_translation_deviation_m: 0.03
+  max_rotation_deviation_deg: 5.0

@@ -19,6 +19,7 @@ data/*_state.json
 
 # Local calibration runs. The accepted camera3 result is tracked explicitly.
 camera3_eye_to_hand/results/result_*/
+calibration/results/
 
 # Local scratch notes
 MMZ/

@@ -1,0 +1,7 @@
+sample,pair,distance_mm,rotation_deg
+1,camera1-camera2,1.56,0.245
+2,camera1-camera2,3.70,0.587
+3,camera1-camera2,0.88,0.308
+4,camera1-camera2,3.81,0.714
+5,camera1-camera2,1.16,0.437
+6,camera1-camera2,1.57,0.728
