@@ -177,7 +177,18 @@ The multi-step three-cup task uses `collect_three_cups_bowls.py`,
 `collect/plan_place_three_cups_in_bowls.yaml`. Its dataset-specific integrity
 check is `audit_three_cups_dataset.py`.
 
-## Camera3 Extrinsic Calibration
+## Camera Calibration
+
+**Calibration in use: [`calibration/three_cam_calibration/`](calibration/three_cam_calibration/)**
+(2026-10-20): `T_base_camera1`, `T_ee_camera2` and `T_base_camera3`, all
+cross-checked to about 2 mm. The older results in `handeye/handeye_data/` and
+`camera3_eye_to_hand/results/` are superseded.
+
+[`calibration/`](calibration/) holds the workflow that produced it: wrist camera2
+first (hand-eye, manual or automatic), then fixed camera3 and camera1 through
+it, then a cross-check. See its README to recalibrate.
+
+## Camera3 Extrinsic Calibration (previous workflow, superseded)
 
 The isolated [`camera3_eye_to_hand`](camera3_eye_to_hand/) workflow estimates
 the fixed wall camera pose `T_base_camera3` using the calibrated wrist camera
